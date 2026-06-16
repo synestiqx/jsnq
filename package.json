@@ -1,0 +1,56 @@
+{
+  "name": "@synestiqx/jsondb",
+  "version": "0.1.0",
+  "description": "Framework-agnostic JSON pipeline engine: where/update/move/copy/insert/delete over nested JSON trees, with copy-on-write fast paths. Zero runtime dependencies.",
+  "type": "module",
+  "main": "src/synced/index.ts",
+  "types": "src/synced/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/synced/index.ts",
+      "import": "./src/synced/index.ts"
+    },
+    "./core/*": {
+      "types": "./src/synced/core/*.ts",
+      "import": "./src/synced/core/*.ts"
+    },
+    "./operators/*": {
+      "types": "./src/synced/operators/*.ts",
+      "import": "./src/synced/operators/*.ts"
+    },
+    "./data-engine": {
+      "types": "./src/data-engine.ts",
+      "import": "./src/data-engine.ts"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "bun run test:units && bun run test:fastpath && bun run test:data-engine && bun run test:bench",
+    "test:units": "bun test/jsondb-match-actions.test.ts",
+    "test:fastpath": "bun test/jsondb-fastpath-parity.test.ts",
+    "test:data-engine": "bun test/jsondb-data-engine.test.ts",
+    "test:bench": "bun test/jsondb-pipeline-bench.ts"
+  },
+  "keywords": [
+    "json",
+    "jsondb",
+    "pipeline",
+    "query",
+    "immutable",
+    "copy-on-write",
+    "where",
+    "update",
+    "move",
+    "nested"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}
