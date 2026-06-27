@@ -256,7 +256,7 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     this.stats.nodesVisited++;
     this.stats.resultsFound++;
     this.stats.inserted++;
-    this.stats.operations.push('insert root-array inside');
+    if (this.options.trackOperations !== false) this.stats.operations.push('insert root-array inside');
 
     return [{
       data: data as TData,
@@ -440,19 +440,22 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
       }
       const plannedTarget = resolveTargetWithPathCreation(this.data, position);
       if (!isCopy) removeFromOriginal(node);
+      // Reuse the pre-resolved target for both move and copy: insertIntoTargetPath
+      // inserts INTO the target (never replaces it), so plannedTarget stays valid.
+      // Previously copy re-resolved from root per call — a redundant O(depth) traversal.
       insertIntoTargetPath(
         this.data,
         position,
         element,
         mode,
-        isCopy ? resolveTargetWithPathCreation : () => plannedTarget,
+        () => plannedTarget,
         key,
         this.options,
         this.stats
       );
     }
     this.stats[isCopy ? 'copied' : 'moved']++;
-    this.stats.operations.push(`${kind} -> ${position}`);
+    if (this.options.trackOperations !== false) this.stats.operations.push(`${kind} -> ${position}`);
   }
 
   private applyActions(node: SearchResultNode, preparedActions: PreparedAction[]): void {
@@ -466,14 +469,14 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
         case 'delete_element': {
           if (!this.options.dryRun) removeFromOriginal(node);
           this.stats.deletedElements++;
-          this.stats.operations.push(`delete_element at ${node.path?.join('.') ?? '<unknown>'}`);
+          if (this.options.trackOperations !== false) this.stats.operations.push(`delete_element at ${node.path?.join('.') ?? '<unknown>'}`);
           break;
         }
         case 'insert': {
           const { data, position, key } = a as InsertAction;
           if (!this.options.dryRun) insertRelative(node, data, position, key, this.options, this.stats);
           this.stats.inserted++;
-          this.stats.operations.push(`insert ${position} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
+          if (this.options.trackOperations !== false) this.stats.operations.push(`insert ${position} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
           break;
         }
         case 'move':
@@ -494,7 +497,7 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
       insertIntoTargetPath(this.data, position, data, mode, resolveTargetWithPathCreation, key, this.options, this.stats);
     }
     this.stats.inserted++;
-    this.stats.operations.push(`insert_to ${position} ${mode ?? 'inside'} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
+    if (this.options.trackOperations !== false) this.stats.operations.push(`insert_to ${position} ${mode ?? 'inside'} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
   }
 
   private applyMatchFanout(
@@ -511,7 +514,7 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     }
     if (fan.kind === 'move') this.stats.moved += applied;
     else this.stats.copied += applied;
-    this.stats.operations.push(
+    if (this.options.trackOperations !== false) this.stats.operations.push(
       fan.allTargets
         ? `${action.type} -> ${targets.length} targets`
         : `${action.type} -> first target (${targets[0]?.path?.join('.') ?? 'none'})`
@@ -556,7 +559,7 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
         }
       }
       this.stats.moved++;
-      this.stats.operations.push(`move_matches_overwrite -> ${overwriteKey}`);
+      if (this.options.trackOperations !== false) this.stats.operations.push(`move_matches_overwrite -> ${overwriteKey}`);
     }
   }
 

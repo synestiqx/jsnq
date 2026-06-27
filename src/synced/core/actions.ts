@@ -138,7 +138,7 @@ export function applyValueAction(
       warnImplicitPath(target, prepared, options, stats, `${action.type}: path '${key}' did not exist; created implicitly`);
       if (!options.dryRun) writePrepared(target, prepared, next);
       stats[VALUE_STATS[action.type]]++;
-      stats.operations.push(`${action.type} ${key}`);
+      if (options.trackOperations !== false) stats.operations.push(`${action.type} ${key}`);
       return true;
     }
     case 'merge_update': {
@@ -147,14 +147,14 @@ export function applyValueAction(
       warnImplicitPath(target, prepared, options, stats, `merge_update: path '${key}' did not exist; created implicitly`);
       if (!options.dryRun) writePrepared(target, prepared, merged);
       stats.mergeUpdates++;
-      stats.operations.push(`merge_update ${key}${act.deep === true ? ' (deep)' : ''}`);
+      if (options.trackOperations !== false) stats.operations.push(`merge_update ${key}${act.deep === true ? ' (deep)' : ''}`);
       return true;
     }
     case 'delete_key': {
       warnImplicitPath(target, prepared, options, stats, `delete_key: path '${key}' did not exist`);
       if (!options.dryRun) deletePrepared(target, prepared);
       stats.deletedKeys++;
-      stats.operations.push(`delete_key ${key}`);
+      if (options.trackOperations !== false) stats.operations.push(`delete_key ${key}`);
       return true;
     }
     default:

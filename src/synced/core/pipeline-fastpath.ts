@@ -48,6 +48,7 @@ const FASTPATH_OPTIONS: Readonly<SearchOptions> = {
   maxDepth: 10,
   includeArrays: true,
   includeObjects: true,
+  trackOperations: false, // host-commit fast path never inspects operation labels
 };
 
 /**
@@ -188,6 +189,7 @@ export function tryFastPipelineMutation<TData = unknown>(
       needPaths: false,
       strictPathsWarn: false,
       clone: cloneJson,
+      trackOperations: false,
     }, stats);
     matched = results.length;
     mutations = stats.replaces + stats.updates + stats.mergeUpdates + stats.deletedKeys;

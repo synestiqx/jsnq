@@ -21,6 +21,7 @@ export type CompiledFlatMutationOptions = {
   needPaths?: boolean;
   strictPathsWarn?: boolean;
   clone?: (v: unknown) => unknown;
+  trackOperations?: boolean;
 };
 
 export type CompiledFlatMutation<T = unknown> = (
@@ -119,7 +120,7 @@ function buildFactory(
     const statKey = statKeyForAction(a.type);
     if (!statKey) return null;
     if (a.type === 'delete_key') {
-      operationPushes.push(`stats.operations.push('delete_key ${(a as { key: string }).key}');`);
+      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('delete_key ${(a as { key: string }).key}');`);
       statIncrements.push(`stats.${String(statKey)}++;`);
       actionLines.push(
         `if (opts.strictPathsWarn && !(${key} in target)) stats.warnings.push('delete_key: path ' + ${key} + ' did not exist');`,
@@ -128,7 +129,7 @@ function buildFactory(
     } else {
       const value = (a as { value: unknown }).value;
       const valueLit = JSON.stringify(value);
-      operationPushes.push(`stats.operations.push('${a.type} ${(a as { key: string }).key}');`);
+      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('${a.type} ${(a as { key: string }).key}');`);
       statIncrements.push(`stats.${String(statKey)}++;`);
       actionLines.push(
         `if (opts.strictPathsWarn && !(${key} in target)) stats.warnings.push('${a.type}: path ' + ${key} + ' did not exist; created implicitly');`,

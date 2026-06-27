@@ -124,7 +124,7 @@ export function executeFlatArrayFastPath<TData>(
       }
     }
     for (const idx of deleteIndices) {
-      params.stats.operations.push(`delete_element at ${idx}`);
+      if (params.options.trackOperations !== false) params.stats.operations.push(`delete_element at ${idx}`);
     }
   }
 

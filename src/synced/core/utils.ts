@@ -35,13 +35,27 @@ export function* dfsIterator<TNode = unknown, TParent = unknown, TKey extends st
   options: { maxDepth: number; includeArrays: boolean; includeObjects: boolean; buildMeta: boolean; returnPaths: boolean; shouldDescend?: (frame: TraverseFrame<TNode, TParent, TKey>) => boolean }
 ): Generator<TraverseFrame<TNode, TParent, TKey>> {
   const { maxDepth, includeArrays, includeObjects, buildMeta, returnPaths, shouldDescend } = options;
-  const stack: Array<{ node: TNode; path?: string[]; depth: number; parent?: TParent; parentKey?: TKey }> = [
-    { node: data, path: returnPaths ? [] : undefined, depth: 0 }
+  // Shared path buffer: O(1) index assignment per push instead of O(depth) spread-copy.
+  // At yield time, slice(0, depth) produces a fresh array the caller owns — same contract
+  // as before, but the per-push allocation ([...(path), segment]) is eliminated.
+  // For a 10k-node tree at depth 10 this removes ~100k element copies from the push side.
+  const pathBuffer: string[] = [];
+  const stack: Array<{ node: TNode; segment: string | null; depth: number; parent?: TParent; parentKey?: TKey }> = [
+    { node: data, segment: null, depth: 0 }
   ];
   while (stack.length) {
     const frame = stack.pop()!;
     if (frame.depth > maxDepth) continue;
-    const { node, path, depth, parent, parentKey } = frame;
+    const { node, segment, depth, parent, parentKey } = frame;
+    if (returnPaths) {
+      if (segment !== null) {
+        pathBuffer[depth - 1] = segment;
+        pathBuffer.length = depth; // truncate stale deeper segments from prior branches
+      } else {
+        pathBuffer.length = 0; // root
+      }
+    }
+    const path = returnPaths ? pathBuffer.slice(0, depth) : undefined;
     const cur: TraverseFrame<TNode, TParent, TKey> = { data: node, path, depth, parent, parentKey } as TraverseFrame<TNode, TParent, TKey>;
     yield cur;
     if (shouldDescend && shouldDescend(cur) === false) continue;
@@ -51,7 +65,7 @@ export function* dfsIterator<TNode = unknown, TParent = unknown, TKey extends st
       for (let i = arr.length - 1; i >= 0; i--) {
         stack.push({
           node: arr[i] as TNode,
-          path: returnPaths ? [...(path as string[]), String(i)] : undefined,
+          segment: String(i),
           depth: nextDepth,
           parent: buildMeta ? (node as unknown as TParent) : undefined,
           parentKey: buildMeta ? (i as unknown as TKey) : undefined,
@@ -64,7 +78,7 @@ export function* dfsIterator<TNode = unknown, TParent = unknown, TKey extends st
         const k = keys[i];
         stack.push({
           node: obj[k] as TNode,
-          path: returnPaths ? [...(path as string[]), k] : undefined,
+          segment: k,
           depth: nextDepth,
           parent: buildMeta ? (node as unknown as TParent) : undefined,
           parentKey: buildMeta ? (k as unknown as TKey) : undefined,

@@ -256,6 +256,14 @@ export interface SearchOptions {
   warnOnOverwrite?: boolean; // default: true
   // Warn that before/after on objects has no stable order semantics
   objectOrderWarning?: boolean; // default: true
+  /**
+   * When false, skips `stats.operations.push(...)` in hot paths. The `operations` array
+   * stays initialized (empty) but no string allocation/push happens per action. Default
+   * true (preserves public stats API). Host commit fast paths set this to false since
+   * they never inspect operation labels — removes O(matches × actions) string allocations
+   * from the mutate hot path.
+   */
+  trackOperations?: boolean; // default: true
 }
 
 // Traversal result node with generics (defaults keep back-compat)
