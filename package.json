@@ -13,10 +13,18 @@
   "types": "./dist/synced/index.d.ts",
   "typesVersions": {
     "*": {
-      "core/*": ["dist/synced/core/*"],
-      "operators/*": ["dist/synced/operators/*"],
-      "data-engine": ["dist/data-engine.d.ts"],
-      "*": ["dist/synced/index.d.ts"]
+      "core/*": [
+        "dist/synced/core/*"
+      ],
+      "operators/*": [
+        "dist/synced/operators/*"
+      ],
+      "data-engine": [
+        "dist/data-engine.d.ts"
+      ],
+      "*": [
+        "dist/synced/index.d.ts"
+      ]
     }
   },
   "exports": {
@@ -53,7 +61,6 @@
     "build": "node scripts/clean-dist.mjs && npm run build:esm && npm run build:cjs",
     "build:esm": "tsc && node scripts/fix-dist-esm-extensions.mjs",
     "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
-    "prepare": "npm run build",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "test": "bun run test:types && bun run test:units && bun run test:fastpath && bun run test:data-engine && bun run test:edge && bun run test:structural && bun run test:vs-native && bun run test:bench",

@@ -161,7 +161,7 @@ Measured from the built ESM with esbuild minification:
 
 | Entry | Minified | Gzip | Brotli |
 | --- | ---: | ---: | ---: |
-| Full JSNQ entry | 46.2 kB | 14.0 kB | 12.8 kB |
+| Full JSNQ entry | 53.9 kB | 16.1 kB | 14.5 kB |
 | Individual `where` operator | 3.1 kB | 1.3 kB | 1.2 kB |
 
 Import individual operators when an application does not need the full public surface.
