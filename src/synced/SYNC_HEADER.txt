@@ -2,5 +2,5 @@
  * This entire synced/ directory is a verbatim copy from store4/store/jsnq/
  * DO NOT EDIT ANYTHING HERE.
  * Changes must come from the canonical source.
- * See PLAN.md v2 §0.3 for enforcement.
+ * Keep this directory byte-identical across consumers; do not edit engine files in place.
  */
