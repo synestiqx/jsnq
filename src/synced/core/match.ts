@@ -35,7 +35,7 @@ export function enforceKnownOperator(
   if (criterion.knownOperator) return;
   const mode = options.operatorsStrict;
   if (mode === 'throw') {
-    throw new Error(`jsondb: unknown comparison operator '${String(criterion.operator)}'`);
+    throw new Error(`jsnq: unknown comparison operator '${String(criterion.operator)}'`);
   }
   if (mode === 'warn') {
     const key = String(criterion.operator);

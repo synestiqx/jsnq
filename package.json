@@ -1,45 +1,73 @@
 {
-  "name": "@synestiqx/jsondb",
+  "name": "@synestiqx/jsnq",
   "version": "0.1.0",
   "description": "Framework-agnostic JSON pipeline engine: where/update/move/copy/insert/delete over nested JSON trees, with copy-on-write fast paths. Zero runtime dependencies.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synestiqx/jsnq.git"
+  },
+  "homepage": "https://github.com/synestiqx/jsnq#readme",
+  "bugs": "https://github.com/synestiqx/jsnq/issues",
   "type": "module",
-  "main": "src/synced/index.ts",
-  "types": "src/synced/index.ts",
-  "exports": {
-    ".": {
-      "types": "./src/synced/index.ts",
-      "import": "./src/synced/index.ts"
-    },
-    "./core/*": {
-      "types": "./src/synced/core/*.ts",
-      "import": "./src/synced/core/*.ts"
-    },
-    "./operators/*": {
-      "types": "./src/synced/operators/*.ts",
-      "import": "./src/synced/operators/*.ts"
-    },
-    "./data-engine": {
-      "types": "./src/data-engine.ts",
-      "import": "./src/data-engine.ts"
+  "main": "./dist/synced/index.js",
+  "types": "./dist/synced/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "core/*": ["dist/synced/core/*"],
+      "operators/*": ["dist/synced/operators/*"],
+      "data-engine": ["dist/data-engine.d.ts"],
+      "*": ["dist/synced/index.d.ts"]
     }
   },
+  "exports": {
+    ".": {
+      "types": "./dist/synced/index.d.ts",
+      "import": "./dist/synced/index.js",
+      "require": "./dist-cjs/synced/index.js"
+    },
+    "./core/*": {
+      "types": "./dist/synced/core/*.d.ts",
+      "import": "./dist/synced/core/*.js",
+      "require": "./dist-cjs/synced/core/*.js"
+    },
+    "./operators/*": {
+      "types": "./dist/synced/operators/*.d.ts",
+      "import": "./dist/synced/operators/*.js",
+      "require": "./dist-cjs/synced/operators/*.js"
+    },
+    "./data-engine": {
+      "types": "./dist/data-engine.d.ts",
+      "import": "./dist/data-engine.js",
+      "require": "./dist-cjs/data-engine.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
   "files": [
-    "src",
     "dist",
-    "README.md"
+    "dist-cjs",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && npm run build:esm && npm run build:cjs",
+    "build:esm": "tsc && node scripts/fix-dist-esm-extensions.mjs",
+    "build:cjs": "tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "bun run test:units && bun run test:fastpath && bun run test:data-engine && bun run test:bench",
-    "test:units": "bun test/jsondb-match-actions.test.ts",
-    "test:fastpath": "bun test/jsondb-fastpath-parity.test.ts",
-    "test:data-engine": "bun test/jsondb-data-engine.test.ts",
-    "test:bench": "bun test/jsondb-pipeline-bench.ts"
+    "test": "bun run test:types && bun run test:units && bun run test:fastpath && bun run test:data-engine && bun run test:edge && bun run test:structural && bun run test:vs-native && bun run test:bench",
+    "test:types": "tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck test/types-path-contract.ts",
+    "test:units": "bun test/jsnq-match-actions.test.ts",
+    "test:fastpath": "bun test/jsnq-fastpath-parity.test.ts",
+    "test:data-engine": "bun test/jsnq-data-engine.test.ts",
+    "test:edge": "bun test/jsnq-edge-cases.test.ts",
+    "test:structural": "bun test/jsnq-structural-safety.test.ts",
+    "test:vs-native": "bun test/jsnq-vs-native.test.ts",
+    "test:bench": "bun test/jsnq-pipeline-bench.ts"
   },
   "keywords": [
     "json",
-    "jsondb",
+    "jsnq",
     "pipeline",
     "query",
     "immutable",

@@ -1,4 +1,4 @@
-export { default as JsonPipeline } from './core/pipeline';
+export { default as JsnqPipeline } from './core/pipeline';
 export { PipelineWrapper } from './core/pipeline-wrapper';
 export * from './core/types';
 export * from './core/data-engine';
@@ -12,7 +12,7 @@ export {
   isDeepSugarAction,
   collectPipelineIntent,
 } from './core/pipeline-fastpath';
-export type { FastMutationResult, PipelineIntent } from './core/pipeline-fastpath';
+export type { FastMutationOptions, FastMutationResult, PipelineIntent } from './core/pipeline-fastpath';
 
 export { default as where } from './operators/where';
 export { default as replace } from './operators/replace';

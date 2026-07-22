@@ -9,6 +9,7 @@ import {
 } from './data-engine';
 
 export const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+export const isRecordObject = (v: unknown): v is Record<string, unknown> => isObject(v) && !Array.isArray(v);
 const isNumeric = (s: string): boolean => /^\d+$/.test(s);
 
 // splitPath shares the engine's bounded plan cache, so path parsing behaves (and
@@ -29,6 +30,122 @@ export type TraverseFrame<TNode = unknown, TParent = unknown, TKey extends strin
   parent?: TParent;
   parentKey?: TKey;
 };
+
+export interface ScanJsonOptions {
+  maxDepth: number;
+  includeArrays: boolean;
+  includeObjects: boolean;
+  buildMeta: boolean;
+  returnPaths: boolean;
+}
+
+/**
+ * Allocation-light DFS for match collection. Stack state is stored in parallel
+ * arrays and result nodes are created only for matches, unlike the generator
+ * contract which must allocate a frame for every visited value.
+ */
+export function scanJsonMatches(
+  data: unknown,
+  options: ScanJsonOptions,
+  predicate: (node: unknown) => boolean,
+  onMatch: (node: TraverseFrame) => boolean | void
+): { nodesVisited: number; maxDepth: number; stopped: boolean } {
+  if (!options.buildMeta && !options.returnPaths) {
+    const nodes: unknown[] = [data];
+    const depths: number[] = [0];
+    let nodesVisited = 0;
+    let observedMaxDepth = 0;
+    while (nodes.length > 0) {
+      const node = nodes.pop();
+      const depth = depths.pop()!;
+      nodesVisited++;
+      if (depth > observedMaxDepth) observedMaxDepth = depth;
+      if (predicate(node) && onMatch({ data: node, depth }) === false) {
+        return { nodesVisited, maxDepth: observedMaxDepth, stopped: true };
+      }
+      if (depth >= options.maxDepth) continue;
+      const nextDepth = depth + 1;
+      if (Array.isArray(node) && options.includeArrays) {
+        for (let index = node.length - 1; index >= 0; index--) {
+          nodes.push(node[index]);
+          depths.push(nextDepth);
+        }
+      } else if (isObject(node) && options.includeObjects) {
+        const keys = Object.keys(node);
+        for (let index = keys.length - 1; index >= 0; index--) {
+          nodes.push(node[keys[index]!]);
+          depths.push(nextDepth);
+        }
+      }
+    }
+    return { nodesVisited, maxDepth: observedMaxDepth, stopped: false };
+  }
+
+  const nodes: unknown[] = [data];
+  const depths: number[] = [0];
+  const parents: unknown[] = [undefined];
+  const parentKeys: Array<string | number | undefined> = [undefined];
+  const segments: Array<string | null> = [null];
+  const pathBuffer: string[] = [];
+  let nodesVisited = 0;
+  let observedMaxDepth = 0;
+
+  while (nodes.length > 0) {
+    const node = nodes.pop();
+    const depth = depths.pop()!;
+    const parent = parents.pop();
+    const parentKey = parentKeys.pop();
+    const segment = segments.pop()!;
+    nodesVisited++;
+    if (depth > observedMaxDepth) observedMaxDepth = depth;
+
+    if (options.returnPaths) {
+      if (segment === null) {
+        pathBuffer.length = 0;
+      } else {
+        pathBuffer[depth - 1] = segment;
+        pathBuffer.length = depth;
+      }
+    }
+
+    if (predicate(node)) {
+      const result: TraverseFrame = {
+        data: node,
+        path: options.returnPaths ? pathBuffer.slice(0, depth) : undefined,
+        depth,
+        parent: options.buildMeta ? parent : undefined,
+        parentKey: options.buildMeta ? parentKey : undefined,
+      };
+      if (onMatch(result) === false) {
+        return { nodesVisited, maxDepth: observedMaxDepth, stopped: true };
+      }
+    }
+
+    if (depth >= options.maxDepth) continue;
+    const nextDepth = depth + 1;
+    if (Array.isArray(node) && options.includeArrays) {
+      for (let index = node.length - 1; index >= 0; index--) {
+        nodes.push(node[index]);
+        depths.push(nextDepth);
+        parents.push(node);
+        parentKeys.push(index);
+        segments.push(String(index));
+      }
+    } else if (isObject(node) && options.includeObjects) {
+      const keys = Object.keys(node);
+      for (let index = keys.length - 1; index >= 0; index--) {
+        const key = keys[index]!;
+        nodes.push(node[key]);
+        depths.push(nextDepth);
+        parents.push(node);
+        parentKeys.push(key);
+        segments.push(key);
+      }
+    }
+  }
+
+  return { nodesVisited, maxDepth: observedMaxDepth, stopped: false };
+}
 
 export function* dfsIterator<TNode = unknown, TParent = unknown, TKey extends string | number = string | number>(
   data: TNode,
@@ -114,13 +231,14 @@ export function resolveTargetPath(root: unknown, path: string, create: boolean):
     key = isNumeric(part) ? Number(part) : part;
     if (typeof key === 'number') {
       if (!Array.isArray(parent)) return { targetNode: undefined, targetParent: parent, targetKey: key };
+      const exists = key in parent;
       node = (parent as unknown[])[key];
-      if (create && node === undefined) break;
+      if (create && !exists) break;
       continue;
     }
     if (!isObject(parent)) return { targetNode: undefined, targetParent: parent, targetKey: key };
     const record = parent as Record<string, unknown>;
-    if (record[key] !== undefined) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
       node = record[key];
       continue;
     }
@@ -148,19 +266,44 @@ function mergeArrays(aArr: unknown[] | undefined, bArr: unknown[] | undefined, o
   if (strat === 'concat') return [...a, ...b];
   // merge-by-key
   const keyer = opts.arrayKey ?? 'id';
-  const getKey = (x: unknown): string | number => typeof keyer === 'function' ? keyer(x) : (x as Record<string, unknown>)?.[keyer as keyof typeof x] as string | number;
-  const map = new Map<string | number, unknown>();
-  for (const item of a) map.set(getKey(item), item);
+  const getKey = (x: unknown): unknown => typeof keyer === 'function'
+    ? keyer(x)
+    : (x as Record<string, unknown>)?.[keyer as keyof typeof x];
+  const isKey = (value: unknown): value is string | number =>
+    typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+  const countKeys = (items: unknown[]): Map<string | number, number> => {
+    const counts = new Map<string | number, number>();
+    for (const item of items) {
+      const key = getKey(item);
+      if (isKey(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const aCounts = countKeys(a);
+  const bCounts = countKeys(b);
+  const out = [...a];
+  const uniqueAIndex = new Map<string | number, number>();
+  for (let i = 0; i < a.length; i++) {
+    const key = getKey(a[i]);
+    if (isKey(key) && aCounts.get(key) === 1) uniqueAIndex.set(key, i);
+  }
   for (const item of b) {
-    const k = getKey(item);
-    if (map.has(k)) {
-      const existing = map.get(k);
-      map.set(k, deepMerge(existing, item, opts));
+    const key = getKey(item);
+    // Missing or duplicate keys are ambiguous. Preserve every value instead of
+    // collapsing them into a single Map entry and silently dropping data.
+    if (!isKey(key) || (aCounts.get(key) ?? 0) > 1 || (bCounts.get(key) ?? 0) > 1) {
+      out.push(item);
+      continue;
+    }
+    const existingIndex = uniqueAIndex.get(key);
+    if (existingIndex !== undefined) {
+      out[existingIndex] = deepMerge(out[existingIndex], item, opts);
     } else {
-      map.set(k, item);
+      uniqueAIndex.set(key, out.length);
+      out.push(item);
     }
   }
-  return Array.from(map.values());
+  return out;
 }
 
 /**

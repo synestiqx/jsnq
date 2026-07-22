@@ -1,9 +1,9 @@
 /**
  * Edge-case correctness net for the criteria matcher + operators — guards the v2
  * single-segment fast path in criterionMatches (and any future perf work).
- * Run: bun test/jsondb-edge-cases.test.ts
+ * Run: bun test/jsnq-edge-cases.test.ts
  */
-import { JsonPipeline } from '../src/synced';
+import { JsnqPipeline } from '../src/synced';
 import where from '../src/synced/operators/where';
 import { compileCriterion, criterionMatches, criteriaMatch } from '../src/synced/core/match';
 
@@ -56,17 +56,17 @@ ok(criteriaMatch(conj, { active: true, score: 10 }, {}, ctx()) === false, 'AND: 
 
 // --- end-to-end through the pipeline (scan parity with the matcher) ---
 const flat = Array.from({ length: 100 }, (_, i) => ({ id: i, active: i % 2 === 0, score: i }));
-const scanned = new JsonPipeline(flat as never, { returnPaths: false, buildMeta: false })
+const scanned = new JsnqPipeline(flat as never, { returnPaths: false, buildMeta: false })
   .pipe(where('active', '===', true), where('score', '>', 50)).all();
 ok(scanned.length === 24, `pipeline scan single-seg criteria (got ${scanned.length}, want 24)`);
 
 // nested DFS where a deep node matches the same head key (must still find it)
 const nested = { a: { id: 7 }, b: { c: { id: 7 } } };
-const deep = new JsonPipeline(nested as never).pipe(where('id', '===', 7)).all();
+const deep = new JsnqPipeline(nested as never).pipe(where('id', '===', 7)).all();
 ok(deep.length === 2, `nested DFS finds both id:7 nodes (got ${deep.length})`);
 
 if (failures > 0) {
   console.error(`\n${failures} edge-case assertion(s) FAILED`);
   process.exit(1);
 }
-console.log('\nAll jsondb edge-case tests passed.');
+console.log('\nAll jsnq edge-case tests passed.');

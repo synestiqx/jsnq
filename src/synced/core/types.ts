@@ -30,7 +30,7 @@ type _Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 // Helper types for path construction
 type ArrayPathSegment<D extends number> = `${number}` | `[${number}]`;
 type NestedArrayPath<T, D extends number> = D extends 0 ? never : `${number}.${PathRec<T, _Prev[D]>}` | `[${number}].${PathRec<T, _Prev[D]>}`;
-type ObjectPathSegment<K extends string, D extends number> = `${K}` | (D extends 0 ? never : `${K}.${PathRec<unknown, _Prev[D]>}`);
+type ObjectPathSegment<K extends string, V, D extends number> = `${K}` | (D extends 0 ? never : `${K}.${PathRec<V, _Prev[D]>}`);
 
 type PathRec<T, D extends number> =
   T extends ReadonlyArray<infer U> | (infer U)[]
@@ -38,7 +38,7 @@ type PathRec<T, D extends number> =
       ArrayPathSegment<D> | NestedArrayPath<U, D>
     : T extends object
       ? // object: key or nested key
-        { [K in Extract<keyof T, string>]: ObjectPathSegment<K, D> }[Extract<keyof T, string>]
+        { [K in Extract<keyof T, string>]: ObjectPathSegment<K, T[K], D> }[Extract<keyof T, string>]
       : never;
 
 // Public default: depth 6 (tunable via advanced alias below)

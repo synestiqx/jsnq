@@ -93,7 +93,9 @@ function buildFactory(criteria: ReadonlyArray<CompiledCriterion>): Factory | nul
  */
 export function compileCriteriaPredicate(criteria: ReadonlyArray<CompiledCriterion>): CompiledPredicate | null {
   if (!compilationAvailable() || !isCodegenable(criteria)) return null;
-  const sig = criteria.map((c) => `${c.segments[0]}${c.operator}`).join('');
+  const sig = criteria
+    .map((c) => `${String(c.segments[0]).length}:${c.segments[0]}:${String(c.operator).length}:${c.operator}`)
+    .join('|');
   let factory = factoryCache.get(sig);
   if (factory === undefined) {
     factory = buildFactory(criteria);

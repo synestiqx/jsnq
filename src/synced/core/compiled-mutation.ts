@@ -11,7 +11,7 @@ import { createJsonPathPlan } from './data-engine';
  *
  * Falls back to the interpreter whenever anything is not trivially codegen-able:
  * deep `@` criteria, multi-segment paths, regex/custom operators, function values,
- * merge_update, or structural actions. The generated code mirrors the semantics of
+ * deep merge_update, or structural actions. The generated code mirrors the semantics of
  * `criteriaMatch` + `applyValueAction` for the supported subset.
  */
 
@@ -22,6 +22,8 @@ export type CompiledFlatMutationOptions = {
   strictPathsWarn?: boolean;
   clone?: (v: unknown) => unknown;
   trackOperations?: boolean;
+  /** Skip result-node allocation when a host only needs the mutated value/stats. */
+  collectResults?: boolean;
 };
 
 export type CompiledFlatMutation<T = unknown> = (
@@ -61,6 +63,11 @@ function actionIsCodegenable(a: Action): boolean {
     if (typeof key !== 'string' || key.length === 0) return false;
     return createJsonPathPlan(key).segments.length === 1;
   }
+  if (a.type === 'merge_update') {
+    const key = (a as { key?: unknown }).key;
+    if (typeof key !== 'string' || key.length === 0 || (a as { deep?: unknown }).deep === true) return false;
+    return createJsonPathPlan(key).segments.length === 1;
+  }
   return false;
 }
 
@@ -94,6 +101,7 @@ function statKeyForAction(type: Action['type']): keyof PipelineStats | null {
     case 'update': return 'updates';
     case 'replace': return 'replaces';
     case 'delete_key': return 'deletedKeys';
+    case 'merge_update': return 'mergeUpdates';
     default: return null;
   }
 }
@@ -107,7 +115,7 @@ function buildFactory(
   for (let i = 0; i < criteria.length; i++) {
     const key = JSON.stringify(criteria[i].segments[0]);
     const expr = opExpr(String(criteria[i].operator), `it[${key}]`, `vals[${i}]`)!;
-    predicateParts.push(`(${expr})`);
+    predicateParts.push(`((${key} in it) && (${expr}))`);
   }
   const predicate = predicateParts.join(' && ');
 
@@ -120,20 +128,27 @@ function buildFactory(
     const statKey = statKeyForAction(a.type);
     if (!statKey) return null;
     if (a.type === 'delete_key') {
-      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('delete_key ${(a as { key: string }).key}');`);
+      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('delete_key ' + ${key});`);
       statIncrements.push(`stats.${String(statKey)}++;`);
       actionLines.push(
-        `if (opts.strictPathsWarn && !(${key} in target)) stats.warnings.push('delete_key: path ' + ${key} + ' did not exist');`,
+        `if (opts.strictPathsWarn && !Object.prototype.hasOwnProperty.call(target, ${key})) stats.warnings.push("delete_key: path '" + ${key} + "' did not exist");`,
         `if (!opts.dryRun) delete target[${key}];`
       );
-    } else {
-      const value = (a as { value: unknown }).value;
-      const valueLit = JSON.stringify(value);
-      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('${a.type} ${(a as { key: string }).key}');`);
+    } else if (a.type === 'merge_update') {
+      const patch = `vals[${valueCount + i}]`;
+      const current = `current${i}`;
+      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('merge_update ' + ${key});`);
       statIncrements.push(`stats.${String(statKey)}++;`);
       actionLines.push(
-        `if (opts.strictPathsWarn && !(${key} in target)) stats.warnings.push('${a.type}: path ' + ${key} + ' did not exist; created implicitly');`,
-        `if (!opts.dryRun) target[${key}] = ${valueLit};`
+        `if (opts.strictPathsWarn && !Object.prototype.hasOwnProperty.call(target, ${key})) stats.warnings.push("merge_update: path '" + ${key} + "' did not exist; created implicitly");`,
+        `if (!opts.dryRun) { var ${current} = target[${key}]; target[${key}] = (${current} !== null && typeof ${current} === 'object' && ${patch} !== null && typeof ${patch} === 'object') ? Object.assign({}, ${current}, ${patch}) : ${patch}; }`
+      );
+    } else {
+      operationPushes.push(`if (opts.trackOperations !== false) stats.operations.push('${a.type} ' + ${key});`);
+      statIncrements.push(`stats.${String(statKey)}++;`);
+      actionLines.push(
+        `if (opts.strictPathsWarn && !Object.prototype.hasOwnProperty.call(target, ${key})) stats.warnings.push("${a.type}: path '" + ${key} + "' did not exist; created implicitly");`,
+        `if (!opts.dryRun) target[${key}] = vals[${valueCount + i}];`
       );
     }
   }
@@ -141,6 +156,7 @@ function buildFactory(
   const source = [
     `var results = [];`,
     `var needPaths = opts.needPaths;`,
+    `var collectResults = opts.collectResults !== false;`,
     `var immutable = opts.immutable;`,
     `var dryRun = opts.dryRun;`,
     `var mutated = 0;`,
@@ -149,14 +165,13 @@ function buildFactory(
     `  if (it === null || typeof it !== 'object') continue;`,
     `  if (!(${predicate})) continue;`,
     `  stats.resultsFound++;`,
-    `  if (needPaths) results.push({ data: it, path: [String(i)], depth: 1, parent: items, parentKey: i });`,
-    `  else results.push({ data: it, depth: 1 });`,
     ...statIncrements.map((l) => `  ${l}`),
     ...operationPushes.map((l) => `  ${l}`),
-    `  if (dryRun) continue;`,
-    `  var target = immutable ? opts.clone(it) : it;`,
+    `  var target = immutable && !dryRun ? opts.clone(it) : it;`,
     ...actionLines.map((l) => `  ${l}`),
-    `  if (immutable) items[i] = target;`,
+    `  if (immutable && !dryRun) items[i] = target;`,
+    `  if (collectResults && needPaths) results.push({ data: target, path: [String(i)], depth: 1, parent: items, parentKey: i });`,
+    `  else if (collectResults) results.push({ data: target, depth: 1 });`,
     `  mutated++;`,
     `}`,
     `return results;`,
@@ -175,13 +190,12 @@ export function compileFlatMutation<T = unknown>(
 ): CompiledFlatMutation<T> | null {
   if (!isFlatMutationCodegenable(criteria, actions)) return null;
   const sig =
-    criteria.map((c) => `${c.segments[0]}\x01${c.operator}\x01${JSON.stringify(c.value)}`).join('\x02') +
+    criteria.map((c) => `${c.segments[0]}\x01${c.operator}`).join('\x02') +
     '\x03' +
     actions.map((a) => {
       const key = (a as { key?: unknown }).key;
-      const value = (a as { value?: unknown }).value;
       if (a.type === 'update' || a.type === 'replace') {
-        return `${a.type}\x01${key}\x01${JSON.stringify(value)}`;
+        return `${a.type}\x01${key}`;
       }
       return `${a.type}\x01${key}`;
     }).join('\x02');
@@ -192,7 +206,12 @@ export function compileFlatMutation<T = unknown>(
     factoryCache.set(sig, factory);
   }
   if (!factory) return null;
-  const vals = criteria.map((c) => c.value);
+  const vals = [
+    ...criteria.map((c) => c.value),
+    ...actions.map((a) => a.type === 'merge_update'
+      ? (a as { patch?: unknown }).patch
+      : (a as { value?: unknown }).value),
+  ];
   return ((items, opts, stats) =>
     factory!(items as unknown[], vals, opts, stats) as SearchResultNode<T, unknown, string | number>[]
   ) as CompiledFlatMutation<T>;

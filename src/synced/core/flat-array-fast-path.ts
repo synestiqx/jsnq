@@ -1,6 +1,7 @@
 import {
   Action,
   CompiledCriterion,
+  InsertAction,
   PipelineStats,
   SearchOptions,
   SearchResultNode,
@@ -10,6 +11,7 @@ import { criteriaMatch } from './match';
 import { compileCriteriaPredicate } from './compiled-predicate';
 import { applyValueAction, isValueAction, prepareActions } from './actions';
 import { compileFlatMutation } from './compiled-mutation';
+import { insertRelative } from './ops';
 
 /**
  * Fast path for the most common large-data shape: a flat root array filtered by
@@ -51,7 +53,8 @@ export function executeFlatArrayFastPath<TData>(
   const needPaths = params.options.returnPaths !== false && (params.options.buildMeta || params.actions.length > 0);
   const isDeleteElementOnly =
     params.actions.length === 1 && params.actions[0].type === 'delete_element';
-  const preparedActions = isDeleteElementOnly ? [] : prepareActions(params.actions);
+  const relativeInsert = getRelativeInsert(params.actions);
+  const preparedActions = isDeleteElementOnly || relativeInsert ? [] : prepareActions(params.actions);
   const strictCtx = { warnedUnknownOps: params.warnedUnknownOps, warnings: params.stats.warnings };
   // Codegen fast path for the per-item match (null → interpreter; results identical).
   const pred = compileCriteriaPredicate(params.criteria);
@@ -61,18 +64,19 @@ export function executeFlatArrayFastPath<TData>(
   // a limit/earlyTermination (compiled loop does not truncate) or when the only
   // action is delete_element (handled by the optimized path below).
   const hasLimit = params.options.limit !== undefined || params.options.earlyTermination;
-  const compiledMutation = !hasLimit && !isDeleteElementOnly
+  const compiledMutation = !hasLimit && !isDeleteElementOnly && !relativeInsert
     ? compileFlatMutation<unknown>(params.criteria, params.actions)
     : null;
   if (compiledMutation) {
     params.stats.nodesVisited += items.length + 1;
     params.stats.maxDepth = Math.max(params.stats.maxDepth, 1);
     const results = compiledMutation(items, {
-      immutable: shouldClone,
+      immutable: shouldClone && !params.immutableApplied,
       dryRun: !!params.options.dryRun,
       needPaths,
       strictPathsWarn: !!params.options.strictPathsWarn,
       clone: cloneJson,
+      trackOperations: params.options.trackOperations,
     }, params.stats) as SearchResultNode<TData, unknown, string | number>[];
     return {
       data: workingData,
@@ -107,6 +111,12 @@ export function executeFlatArrayFastPath<TData>(
       continue;
     }
 
+    if (relativeInsert) {
+      results.push(node);
+      if (limit && results.length >= limit) break;
+      continue;
+    }
+
     for (const prepared of preparedActions) {
       applyValueAction(item, prepared, params.options, params.stats);
     }
@@ -118,13 +128,34 @@ export function executeFlatArrayFastPath<TData>(
   if (isDeleteElementOnly) {
     params.stats.deletedElements += deleteIndices.length;
     if (!params.options.dryRun) {
-      deleteIndices.sort((a, b) => b - a);
-      for (const idx of deleteIndices) {
-        (workingData as unknown[]).splice(idx, 1);
+      // Matches arrive in ascending index order. Compact once instead of doing
+      // N descending splices (which turns deleting half a large array into O(n²)).
+      let writeIndex = 0;
+      let deleteCursor = 0;
+      for (let readIndex = 0; readIndex < items.length; readIndex++) {
+        if (deleteCursor < deleteIndices.length && deleteIndices[deleteCursor] === readIndex) {
+          deleteCursor++;
+          continue;
+        }
+        items[writeIndex++] = items[readIndex];
       }
+      items.length = writeIndex;
     }
     for (const idx of deleteIndices) {
       if (params.options.trackOperations !== false) params.stats.operations.push(`delete_element at ${idx}`);
+    }
+  }
+
+  if (relativeInsert) {
+    const { data, position, key } = relativeInsert;
+    for (const node of results) {
+      if (!params.options.dryRun && !insertRelative(node, data, position, key, params.options, params.stats)) {
+        continue;
+      }
+      params.stats.inserted++;
+      if (params.options.trackOperations !== false) {
+        params.stats.operations.push(`insert ${position} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
+      }
     }
   }
 
@@ -142,7 +173,14 @@ function canUseFlatArrayFastPath<TData>(params: FastPathParams<TData>): boolean 
   if ((params.options.maxDepth ?? 10) < 1) return false;
   if (params.criteria.some((criterion) => criterion.isDeep)) return false;
   if (hasNestedCriterionCandidate(params.data, params.criteria, params.options)) return false;
-  return params.actions.every((action) => isValueAction(action.type) || action.type === 'delete_element');
+  return params.actions.every((action) => isValueAction(action.type) || action.type === 'delete_element') ||
+    getRelativeInsert(params.actions) !== null;
+}
+
+function getRelativeInsert(actions: ReadonlyArray<Action>): InsertAction | null {
+  if (actions.length !== 1 || actions[0]?.type !== 'insert') return null;
+  const action = actions[0] as InsertAction;
+  return action.position === 'before' || action.position === 'after' ? action : null;
 }
 
 /**
@@ -167,37 +205,43 @@ export function hasNestedCriterionCandidate(
 
   const includeArrays = !!options.includeArrays;
   const includeObjects = !!options.includeObjects;
-  const stack: Array<{ node: unknown; depth: number }> = [];
+  const nodes: object[] = [];
+  const depths: number[] = [];
 
   for (let index = items.length - 1; index >= 0; index--) {
-    pushChildren(items[index], 1, maxDepth, includeArrays, includeObjects, stack);
+    pushChildContainers(items[index], 1, maxDepth, includeArrays, includeObjects, nodes, depths);
   }
 
-  while (stack.length) {
-    const frame = stack.pop()!;
-    if (canNodeMatchCriterionHead(frame.node, firstSegments)) {
+  while (nodes.length > 0) {
+    const node = nodes.pop()!;
+    const depth = depths.pop()!;
+    if (canNodeMatchCriterionHead(node, firstSegments)) {
       return true;
     }
-    pushChildren(frame.node, frame.depth, maxDepth, includeArrays, includeObjects, stack);
+    pushChildContainers(node, depth, maxDepth, includeArrays, includeObjects, nodes, depths);
   }
 
   return false;
 }
 
-function pushChildren(
+function pushChildContainers(
   node: unknown,
   depth: number,
   maxDepth: number,
   includeArrays: boolean,
   includeObjects: boolean,
-  stack: Array<{ node: unknown; depth: number }>
+  nodes: object[],
+  depths: number[]
 ): void {
   if (depth >= maxDepth) return;
   const nextDepth = depth + 1;
 
   if (Array.isArray(node) && includeArrays) {
     for (let index = node.length - 1; index >= 0; index--) {
-      stack.push({ node: node[index], depth: nextDepth });
+      const child = node[index];
+      if (!isObject(child)) continue;
+      nodes.push(child);
+      depths.push(nextDepth);
     }
     return;
   }
@@ -206,7 +250,10 @@ function pushChildren(
     const obj = node as Record<string, unknown>;
     for (const key in obj) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        stack.push({ node: obj[key], depth: nextDepth });
+        const child = obj[key];
+        if (!isObject(child)) continue;
+        nodes.push(child);
+        depths.push(nextDepth);
       }
     }
   }

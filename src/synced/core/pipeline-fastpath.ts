@@ -41,9 +41,19 @@ export interface FastMutationResult<TData = unknown> {
   mutations: number;
   /** Number of items that matched the criteria. */
   matched: number;
+  /** Changed paths relative to the branch, or null for non-precise shapes. */
+  affectedPaths: string[] | null;
 }
 
-/** Matches JsonPipeline's constructor defaults — keep in sync with pipeline.ts. */
+export interface FastMutationOptions {
+  /**
+   * Keep exact changed paths for precise host wakeups. Disable when the caller
+   * only commits the returned value; this avoids one result object per match.
+   */
+  collectAffectedPaths?: boolean;
+}
+
+/** Matches JsnqPipeline's constructor defaults — keep in sync with pipeline.ts. */
 const FASTPATH_OPTIONS: Readonly<SearchOptions> = {
   maxDepth: 10,
   includeArrays: true,
@@ -104,13 +114,8 @@ export function collectFlatValueActionPaths(currentValue: unknown, ops: Readonly
   if (intent.criteria.some((criterion) => criterion.isDeep)) return null;
 
   // Only concrete string-key value actions (no sugar patch objects, no structural ops).
-  const keys: string[] = [];
-  for (const action of intent.actions) {
-    if (!isValueAction(action.type)) return null;
-    const key = (action as { key?: unknown }).key;
-    if (typeof key !== 'string' || key.length === 0) return null;
-    keys.push(key);
-  }
+  const keys = preciseActionKeys(intent.actions);
+  if (!keys) return null;
   // If a nested descendant could also match, the flat scan would diverge from DFS — bail.
   if (hasNestedCriterionCandidate(currentValue, intent.criteria, FASTPATH_OPTIONS)) return null;
 
@@ -118,9 +123,32 @@ export function collectFlatValueActionPaths(currentValue: unknown, ops: Readonly
   const paths: string[] = [];
   for (let index = 0; index < currentValue.length; index++) {
     if (!criteriaMatch(intent.criteria, currentValue[index], FASTPATH_OPTIONS, strictCtx)) continue;
-    for (const key of keys) paths.push(`${index}.${key}`);
+    appendAffectedPaths(paths, index, keys);
   }
   return paths;
+}
+
+function preciseActionKeys(actions: ReadonlyArray<Action>): string[] | null {
+  const keys: string[] = [];
+  for (const action of actions) {
+    if (!isValueAction(action.type)) return null;
+    const key = (action as { key?: unknown }).key;
+    if (typeof key !== 'string' || key.length === 0 || splitPath(key).length !== 1) return null;
+    keys.push(key);
+  }
+  return keys;
+}
+
+function cloneFlatItem(item: unknown): unknown {
+  return Array.isArray(item)
+    ? item.slice()
+    : { ...(item as Record<string, unknown>) };
+}
+
+function appendAffectedPaths(paths: string[], index: number, keys: ReadonlyArray<string>): void {
+  const itemPath = String(index);
+  paths.push(itemPath);
+  for (const key of keys) paths.push(`${itemPath}.${key}`);
 }
 
 type SugarPatch = Record<string, unknown>;
@@ -156,7 +184,8 @@ function canFastPath(currentValue: unknown, intent: PipelineIntent): currentValu
  */
 export function tryFastPipelineMutation<TData = unknown>(
   currentValue: TData,
-  ops: ReadonlyArray<unknown>
+  ops: ReadonlyArray<unknown>,
+  options: FastMutationOptions = {}
 ): FastMutationResult<TData> | undefined {
   const intent = collectPipelineIntent(ops);
   if (!canFastPath(currentValue, intent)) return undefined;
@@ -167,12 +196,15 @@ export function tryFastPipelineMutation<TData = unknown>(
   // Throwaway stats/ctx: applyValueAction records into them; hosts only need the value.
   const stats = { warnings: [], operations: [] } as unknown as PipelineStats;
   stats.replaces = stats.updates = stats.mergeUpdates = stats.deletedKeys = 0;
+  stats.resultsFound = 0;
   const strictCtx = { warnedUnknownOps: new Set<string>(), warnings: stats.warnings };
 
   // Codegen fast path for the per-item match (null → interpreter; results identical).
   const pred = compileCriteriaPredicate(intent.criteria);
 
   const items = currentValue as unknown[];
+  const preciseKeys = sugarPatches.some(Boolean) ? null : preciseActionKeys(intent.actions);
+  const affectedPaths = options.collectAffectedPaths !== false && preciseKeys ? [] as string[] : null;
   let matched = 0;
   let mutations = 0;
 
@@ -186,12 +218,13 @@ export function tryFastPipelineMutation<TData = unknown>(
     const results = compiledMutation(next, {
       immutable: true,
       dryRun: false,
-      needPaths: false,
+      needPaths: affectedPaths !== null,
       strictPathsWarn: false,
-      clone: cloneJson,
+      clone: preciseKeys === null ? cloneJson : cloneFlatItem,
       trackOperations: false,
+      collectResults: affectedPaths !== null,
     }, stats);
-    matched = results.length;
+    matched = stats.resultsFound;
     mutations = stats.replaces + stats.updates + stats.mergeUpdates + stats.deletedKeys;
     if (sugarPatches.some(Boolean)) {
       for (const node of results) {
@@ -204,7 +237,10 @@ export function tryFastPipelineMutation<TData = unknown>(
         }
       }
     }
-    return { value: next as TData, mutations, matched };
+    if (affectedPaths && preciseKeys) {
+      for (const node of results) appendAffectedPaths(affectedPaths, Number(node.parentKey), preciseKeys);
+    }
+    return { value: (matched > 0 ? next : items) as TData, mutations, matched, affectedPaths };
   }
 
   // Interpreter fallback (function values, merge_update, etc.).
@@ -218,7 +254,7 @@ export function tryFastPipelineMutation<TData = unknown>(
     }
     matched++;
     anyMatched = true;
-    const clone = cloneJson(item);
+    const clone = preciseKeys === null ? cloneJson(item) : cloneFlatItem(item);
     for (const patch of sugarPatches) {
       if (patch) {
         Object.assign(clone as SugarPatch, patch);
@@ -229,9 +265,10 @@ export function tryFastPipelineMutation<TData = unknown>(
       if (applyValueAction(clone, action, FASTPATH_OPTIONS, stats)) mutations++;
     }
     next[i] = clone;
+    if (affectedPaths && preciseKeys) appendAffectedPaths(affectedPaths, i, preciseKeys);
   }
 
-  return { value: (anyMatched ? next : items) as TData, mutations, matched };
+  return { value: (anyMatched ? next : items) as TData, mutations, matched, affectedPaths };
 }
 
 /* ========================================================================== */
@@ -316,9 +353,9 @@ export function tryFastStructuralMutation<TData = unknown>(
     if (typeof action.key === 'number') {
       const next = [...arr];
       next.splice(Math.max(0, Math.min(next.length, action.key)), 0, data);
-      return { value: next as TData, mutations: 1, matched: 0 };
+      return { value: next as TData, mutations: 1, matched: 0, affectedPaths: null };
     }
-    return { value: [...arr, data] as TData, mutations: 1, matched: 0 };
+    return { value: [...arr, data] as TData, mutations: 1, matched: 0, affectedPaths: null };
   }
 
   // delete_key on an array of flat items: identical to the pipeline's deep
@@ -336,7 +373,7 @@ export function tryFastStructuralMutation<TData = unknown>(
       delete copy[key];
       return copy;
     });
-    return { value: next as TData, mutations: 1, matched: 0 };
+    return { value: next as TData, mutations: 1, matched: 0, affectedPaths: null };
   }
 
   // insert_to 'inside' an existing array — append via COW spine.
@@ -348,7 +385,7 @@ export function tryFastStructuralMutation<TData = unknown>(
     currentValue !== null && typeof currentValue === 'object'
   ) {
     const next = applyInsertToInsideArrayCow(currentValue, action.position, action.data);
-    if (next !== undefined) return { value: next as TData, mutations: 1, matched: 0 };
+    if (next !== undefined) return { value: next as TData, mutations: 1, matched: 0, affectedPaths: null };
   }
 
   return undefined;
@@ -375,13 +412,17 @@ export function isDeepSugarAction(action: unknown): boolean {
 export function applyDeepSugarPatch(current: unknown, criteria: ReadonlyArray<unknown>, actions: ReadonlyArray<unknown>): unknown {
   if (current === null || typeof current !== 'object') return current;
 
+  const compiledCriteria = criteria as CompiledCriterion[];
+  const strictCtx = { warnedUnknownOps: new Set<string>(), warnings: [] as string[] };
+  if (!criteriaMatch(compiledCriteria, current, FASTPATH_OPTIONS, strictCtx)) return current;
+
   // Clone once (deep structures in the sugar cases are small).
   const result: any = cloneJson(current as object);
 
   const sugarActions = (actions as Array<{ key?: unknown; value?: unknown }>).filter(isDeepSugarAction);
   if (sugarActions.length === 0) return result;
 
-  for (const crit of criteria as Array<{ segments?: unknown }>) {
+  for (const crit of compiledCriteria) {
     const segs: string[] = Array.isArray(crit?.segments) ? (crit.segments as string[]) : [];
     if (segs.length === 0) continue;
 

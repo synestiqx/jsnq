@@ -7,7 +7,7 @@ interface OperatorDefinition {
   execute: OperatorFn;
 }
 
-// Built-in operator registry local to jsondb core
+// Built-in operator registry local to jsnq core
 const Operators: Partial<Record<ComparisonOperator, OperatorDefinition>> & Record<string, OperatorDefinition> = {
   '==': { execute: (a, b) => a == b },
   '===': { execute: (a, b) => a === b },

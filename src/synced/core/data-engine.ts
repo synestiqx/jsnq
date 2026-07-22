@@ -451,9 +451,28 @@ export function writeJsonPath(root: unknown, pathOrPlan: string | JsonPathPlan, 
   }
   const existed = Object.prototype.hasOwnProperty.call(parent, key);
   const previous = parent[key];
-  if (Array.isArray(parent) && isNumericSegment(key)) parent[Number(key)] = value;
-  else parent[key] = value;
+  assignJsonValue(parent, key, value);
   return createExactSetResult(plan, previous, value, existed, isObjectLike(previous) || isObjectLike(value));
+}
+
+function assignJsonValue(parent: Record<string, unknown> | unknown[], key: string, value: unknown): void {
+  if (Array.isArray(parent) && isNumericSegment(key)) parent[Number(key)] = value;
+  else (parent as Record<string, unknown>)[key] = value;
+}
+
+/**
+ * Write-only variant for hosts that perform their own wake bookkeeping. It uses
+ * the same cached path plan and parent resolver as `writeJsonPath`, but avoids
+ * allocating a mutation-result object and path arrays that the caller would discard.
+ * Returns false for a root path or an unresolvable target.
+ */
+export function writeJsonPathValue(root: unknown, pathOrPlan: string | JsonPathPlan, value: unknown): boolean {
+  const plan = typeof pathOrPlan === 'string' ? createJsonPathPlan(pathOrPlan) : pathOrPlan;
+  if (plan.key == null) return false;
+  const { parent, key } = resolveJsonParentAndKey(root, plan, { create: true });
+  if (!isObjectLike(parent) || key == null) return false;
+  assignJsonValue(parent, key, value);
+  return true;
 }
 
 export function deleteJsonPath(root: unknown, pathOrPlan: string | JsonPathPlan): JsonMutationResult {
@@ -566,7 +585,59 @@ export class JsonDataCursor {
   }
 }
 
+function cloneJsonValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
+  if (value === null || typeof value !== 'object') {
+    if ((typeof value === 'function' || typeof value === 'symbol') && typeof structuredClone === 'function') {
+      return structuredClone(value);
+    }
+    return value;
+  }
+
+  const cached = seen.get(value);
+  if (cached !== undefined) return cached;
+
+  if (Array.isArray(value)) {
+    const clone = new Array(value.length);
+    seen.set(value, clone);
+    for (let index = 0; index < value.length; index++) {
+      if (index in value) clone[index] = cloneJsonValue(value[index], seen);
+    }
+    return clone;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    if (typeof structuredClone === 'function') {
+      const clone = structuredClone(value);
+      seen.set(value, clone);
+      return clone;
+    }
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  const clone = Object.create(prototype) as Record<string, unknown>;
+  seen.set(value, clone);
+  const source = value as Record<string, unknown>;
+  const keys = Object.keys(source);
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index]!;
+    const child = cloneJsonValue(source[key], seen);
+    if (key === '__proto__') {
+      Object.defineProperty(clone, key, { value: child, enumerable: true, configurable: true, writable: true });
+    } else {
+      clone[key] = child;
+    }
+  }
+  return clone;
+}
+
+/**
+ * Clone the JSON-like state shape without paying structuredClone's serializer
+ * overhead for ordinary arrays and records. Non-plain host objects retain the
+ * previous structuredClone behavior; the WeakMap also preserves shared refs
+ * and cycles for plain data supplied through untyped JavaScript callers.
+ */
 export function cloneJsonData<T>(value: T): T {
-  if (typeof structuredClone === 'function') return structuredClone(value);
-  return JSON.parse(JSON.stringify(value));
+  if (value === null || typeof value !== 'object') return value;
+  return cloneJsonValue(value, new WeakMap<object, unknown>()) as T;
 }

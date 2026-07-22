@@ -1,54 +1,170 @@
-# @synestiqx/jsondb
+# @synestiqx/jsnq
 
-Framework-agnostic **JSON pipeline engine**: filter (`where`), mutate (`update` /
-`replace` / `mergeUpdate` / `deleteKey` / `deleteElement`) and restructure
-(`insert` / `insertTo` / `moveTo` / `copyTo` / `moveToMatches` / `copyToAll` / …)
-nested JSON trees. Copy-on-write fast paths for the common flat-array + value-action
-shape. **Zero runtime dependencies.**
+Framework-independent JSON query and mutation engine used by SolidStore and Angular SignalStore. It supports flat arrays and deeply nested trees, copy-on-write host mutations, typed paths, structural moves/copies, and focused operator imports. It has no runtime dependencies.
 
-This package is the single source of truth shared (byte-identical) by the SolidJS
-store (`@synestiqx/solidstore`) and the Angular SignalStore — consume it like any
-other dependency (the way you'd depend on `rxjs`), not as a vendored copy.
-
-## Install
+## Install From GitHub
 
 ```sh
-bun add @synestiqx/jsondb     # or: npm i @synestiqx/jsondb
+bun add github:synestiqx/jsnq
+# or
+npm install github:synestiqx/jsnq
 ```
 
-## Usage
+The repository commits tree-shakeable ESM, CommonJS fallback output, and declarations, so
+Git installation does not depend on a lifecycle build. Modern bundlers select `import`,
+Node `require()` selects the isolated CommonJS build, and both share one TypeScript source.
+It can also be linked locally with `file:../jsnq`.
+
+## Query And Mutate
 
 ```ts
-import { JsonPipeline, where, update, moveTo } from '@synestiqx/jsondb';
+import JsnqPipeline from '@synestiqx/jsnq/core/pipeline';
+import where from '@synestiqx/jsnq/operators/where';
+import update from '@synestiqx/jsnq/operators/update';
 
-const data = { users: [{ id: 1, name: 'Ann' }, { id: 2, name: 'Bob' }] };
+const users = [
+  { id: 1, profile: { name: 'Ann' }, active: true },
+  { id: 2, profile: { name: 'Bob' }, active: false },
+];
 
-// query
-new JsonPipeline(data.users).pipe(where('id', '===', 1)).first();
+const query = new JsnqPipeline(users).pipe(where('active', '===', true));
+const first = query.first();
 
-// mutate in place (auto-clone available via .immutable())
-new JsonPipeline(data.users).pipe(where('id', '===', 1), update('name', 'Ada')).all();
+const mutation = new JsnqPipeline(users, { immutable: true })
+  .pipe(where('id', '===', 2), update('profile.name', 'Ada'));
+mutation.all();
+const nextUsers = mutation.data;
 ```
 
-Deep imports are available for advanced/host integrations:
+`pipe()` composes immutable operator descriptors. Execution is explicit:
+
+- `all()` returns every matching result node;
+- `first()` returns the first matched value or `null`;
+- `count()` returns the number of matches;
+- `getStats()` reports traversal, action counts, timings, warnings, and operations;
+- `dryRun()` plans and measures without mutating;
+- `immutable(true)` always clones before actions, while `immutable('auto')` clones only
+  when the pipeline contains a mutation.
+
+Structural operators are independent modules:
 
 ```ts
-import { tryFastPipelineMutation, collectFlatValueActionPaths } from '@synestiqx/jsondb';
-import { criteriaMatch } from '@synestiqx/jsondb/core/match';
-import where from '@synestiqx/jsondb/operators/where';
+import moveTo from '@synestiqx/jsnq/operators/moveTo';
+import copyToAll from '@synestiqx/jsnq/operators/copyToAll';
+import insertTo from '@synestiqx/jsnq/operators/insertTo';
 ```
 
-## Scripts
+## Operator Reference
+
+| Operator | Purpose |
+| --- | --- |
+| `where(path, operator, value)` | Add an AND-combined criterion. |
+| `update(path, valueOrFn)` | Update a matched value, creating a missing path when policy allows it. |
+| `replace(path, valueOrFn)` | Replace a matched value. |
+| `mergeUpdate(path, patch, { deep })` | Shallow or deep merge into a matched object. |
+| `deleteKey(path)` | Delete a key/index from each match. |
+| `deleteElement()` | Remove each matched element from its parent container. |
+| `insert(data, mode, key)` | Insert relative to each match. |
+| `insertTo(path, data, mode, key)` | Insert into a target path. |
+| `moveTo` / `copyTo` | Move or copy matches to one path. |
+| `moveToMatches` / `copyToMatches` | Move or copy matched sources to the first selected target. |
+| `moveToAll` / `copyToAll` | Move or copy matched sources into every selected target. |
+| `moveToMatchesOverwrite` | Move matches and overwrite a selected target key. |
+
+Insertion modes are `inside`, `before`, and `after`. Built-in comparisons are `==`,
+`===`, `!=`, `!==`, `>`, `>=`, `<`, `<=`, `includes`, `!includes`, `startsWith`,
+`endsWith`, `regex`, `isArray`, and `isObject`. Multiple `where()` calls are AND-combined.
+Deep `@` criteria and nested object/array paths use the general traversal; supported flat
+shapes select copy-on-write fast paths automatically.
+
+Structural operations use a stable match set: nodes inserted by `moveTo` or `copyTo` are
+not visited again by the same operation. Multi-source moves preserve source order after
+safe descending-index removal. Multi-target move/copy results do not share mutable object
+references between targets. When an explicit object key already contains an array,
+`insertTo`, `moveTo`, and `copyTo` append to that array rather than replacing it. A
+non-insertable target fails before source removal or success-stat updates.
+
+`moveToMatches` and `copyToMatches` intentionally use only the first target in traversal
+order. `moveToAll` and `copyToAll` use every target. In both forms, `.all()` supplies all
+matched sources and `.first()` supplies one source. For object fan-out without an explicit
+key, the source property name or its `id` is used. The default `overwritePolicy` is
+`'overwrite'`; choose `'skip'` or `'error'` when replacing an existing object slot is not
+acceptable.
+
+Importing one operator does not execute or instantiate the others. A pipeline, compiled predicate, path plan, and mutation result are created only when the corresponding API is called. Path plans and compiled hot paths are cached with bounded caches.
+
+## Data Engine
+
+Hosts can use the same public path engine instead of duplicating traversal logic:
+
+```ts
+import {
+  readJsonPath,
+  writeJsonPath,
+  deleteJsonPath,
+  createJsonPathPlan,
+} from '@synestiqx/jsnq/data-engine';
+
+const state: Record<string, unknown> = {};
+writeJsonPath(state, 'workspace.pages.0.title', 'Home');
+readJsonPath(state, createJsonPathPlan('workspace.pages.0.title'));
+deleteJsonPath(state, 'workspace.pages.0.title');
+```
+
+## Mutation Model
+
+- Generic pipelines mutate their working data; `{ immutable: true }` clones before mutation.
+- Host fast paths use copy-on-write: a new outer container and changed item are created while untouched branches retain identity.
+- Single-key flat mutations shallow-clone the changed item and preserve untouched nested references.
+- Structural operations fall back to the full traversal whenever the optimized path cannot prove semantic parity.
+- No-match immutable fast paths retain the original root identity.
+- `merge-by-key` merges values only when the configured key is present and unique on both
+  sides. Missing or duplicate keys are preserved as separate entries instead of being
+  collapsed by an ambiguous match.
+
+Important pipeline options include `maxDepth`, `limit`, `earlyTermination`,
+`includeArrays`, `includeObjects`, `returnPaths`, `strictPathsWarn`,
+`operatorsStrict`, `overwritePolicy`, `arrayMergeStrategy`, and `trackOperations`.
+`maxDepth` defaults to `10`; raise it explicitly for deeper recursive documents.
+`overwritePolicy` governs object/path assignments, while insertion into an existing array
+is an append/splice operation and does not replace that array key.
+Optimized execution is an internal decision: unsupported or ambiguous shapes fall back to
+the full pipeline with the same public semantics.
+
+For production hosts that only commit the returned value, set `returnPaths: false` and
+`trackOperations: false`. This avoids diagnostic path arrays and per-match log strings;
+store bridges do this automatically outside development diagnostics. Benchmark output
+separates complete batches, records scanned, and applied actions: a batch that scans 10,000
+records is one batch, not one primitive operation.
+
+## Package Boundaries
+
+- `@synestiqx/jsnq`: complete public API.
+- `@synestiqx/jsnq/operators/<name>`: one operator.
+- `@synestiqx/jsnq/core/<module>`: host and advanced integration.
+- `@synestiqx/jsnq/data-engine`: path read/write/delete and mutation metadata.
+
+## Verify
 
 ```sh
-bun test          # run the engine test suite (units, fastpath parity, data-engine, bench)
-bun run typecheck # tsc --noEmit
-bun run build     # emit dist/ (JS + .d.ts) for npm publishing
+bun run typecheck
+bun test
+bun run build
+npm pack --dry-run
 ```
 
-> Dev/test consumption resolves to the TypeScript sources (`src/`) so no build step
-> is needed with bun/tsx. For an npm release, run `bun run build` and point the
-> package `exports` at `dist/`.
+The suite covers nested paths, missing keys, special JavaScript values, immutable result identity, structural operations, fast-path parity, and native-equivalent behavior.
+
+## Bundle Size
+
+Measured from the built ESM with esbuild minification:
+
+| Entry | Minified | Gzip | Brotli |
+| --- | ---: | ---: | ---: |
+| Full JSNQ entry | 46.2 kB | 14.0 kB | 12.8 kB |
+| Individual `where` operator | 3.1 kB | 1.3 kB | 1.2 kB |
+
+Import individual operators when an application does not need the full public surface.
 
 ## License
 

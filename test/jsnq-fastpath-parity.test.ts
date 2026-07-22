@@ -1,16 +1,17 @@
 /**
- * test-jsondb-fastpath-parity.ts
+ * test-jsnq-fastpath-parity.ts
  *
  * Contract tests for core/pipeline-fastpath.ts — the COW flat-array engine used
  * by host mutate() flows (Angular GenericProxyHandler, solid-pipeline-bridge).
  * For every guarded scenario the fast path must produce byte-equal data to the
- * full clone+JsonPipeline flow; for everything outside the guard it must return
+ * full clone+JsnqPipeline flow; for everything outside the guard it must return
  * undefined so callers fall back to the pipeline unchanged.
  */
 
 import {
-  JsonPipeline,
+  JsnqPipeline,
   type JsonLike,
+  type SearchResultNode,
   applyDeepSugarPatch,
   cloneJsonData,
   collectPipelineIntent,
@@ -48,8 +49,8 @@ function rows(): Row[] {
   ];
 }
 
-function viaPipeline(input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): { data: unknown; mutations: number; matched: number } {
-  let pipeline = new JsonPipeline(cloneJsonData(input) as JsonLike);
+function viaPipeline(input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): { data: unknown; mutations: number; matched: number } {
+  let pipeline = new JsnqPipeline(cloneJsonData(input) as JsonLike);
   for (const op of ops) pipeline = op(pipeline);
   pipeline.all();
   const stats = pipeline.getStats();
@@ -60,7 +61,7 @@ function viaPipeline(input: unknown, ops: Array<(p: JsonPipeline) => JsonPipelin
   };
 }
 
-function expectParity(name: string, input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): void {
+function expectParity(name: string, input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): void {
   const snapshot = JSON.stringify(input);
   const fast = tryFastPipelineMutation(input, ops);
   check(`${name}: fast path engages`, fast !== undefined);
@@ -72,7 +73,7 @@ function expectParity(name: string, input: unknown, ops: Array<(p: JsonPipeline)
   check(`${name}: input not mutated`, JSON.stringify(input) === snapshot);
 }
 
-function expectBail(name: string, input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): void {
+function expectBail(name: string, input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): void {
   check(`${name}: bails to full pipeline`, tryFastPipelineMutation(input, ops) === undefined);
 }
 
@@ -122,6 +123,23 @@ expectParity('no-match where', rows(), [
   update('name', 'never'),
 ]);
 
+for (const [operator, value] of [
+  ['!=', 1],
+  ['!==', 1],
+  ['!includes', 'x'],
+  ['isArray', false],
+  ['isObject', false],
+] as const) {
+  expectParity(`missing criterion key + ${operator}`, [
+    { id: 1, name: 'present' },
+    { name: 'missing' },
+    { id: undefined, name: 'undefined' },
+  ], [
+    where('id', operator, value as never),
+    update('name', 'changed'),
+  ]);
+}
+
 expectParity('implicit path creation', rows(), [
   where('id', '==', 1),
   update('meta.brandNew.flag', true),
@@ -140,9 +158,77 @@ expectParity('implicit path creation', rows(), [
   check('identity: returns new outer array', next !== input);
   check('identity: unmatched items shared by reference', next[0] === input[0] && next[2] === input[2]);
   check('identity: matched item is a fresh clone', next[1] !== input[1]);
-  check('identity: matched nested objects not aliased', next[1].meta !== input[1].meta);
+  check('identity: untouched nested objects remain shared', next[1].meta === input[1].meta);
   check('identity: input row untouched', input[1].name === 'two');
   check('identity: mutations counted', fast.mutations === 1 && fast.matched === 1);
+  check('identity: precise paths include item and leaf',
+    JSON.stringify(fast.affectedPaths) === JSON.stringify(['1', '1.name']));
+})();
+
+(() => {
+  const input = rows();
+  const fast = tryFastPipelineMutation(
+    input,
+    [where('id', '==', 2), update('name', 'changed')],
+    { collectAffectedPaths: false },
+  );
+  check('no-path host mode: fast path engages', fast !== undefined);
+  if (!fast) return;
+  const next = fast.value as Row[];
+  check('no-path host mode: preserves mutation result', next[1].name === 'changed' && input[1].name === 'two');
+  check('no-path host mode: preserves counts', fast.matched === 1 && fast.mutations === 1);
+  check('no-path host mode: omits affected path allocation', fast.affectedPaths === null);
+})();
+
+(() => {
+  const input = [{ id: 1, value: 'before' }];
+  const pipeline = new JsnqPipeline(input as JsonLike, { immutable: true })
+    .pipe(where('id', '===', 1), update('value', 'after'));
+  const result = pipeline.all()[0] as SearchResultNode<any>;
+  check('immutable all(): result is the mutated working item', result.data.value === 'after');
+  check('immutable all(): result and pipeline data share the working item', result.data === (pipeline.data as any[])[0]);
+
+  const first = new JsnqPipeline(input as JsonLike, { immutable: true })
+    .pipe(where('id', '===', 1), update('value', 'after'))
+    .first<{ id: number; value: string }>();
+  check('immutable first(): returns the mutated item', first?.value === 'after');
+})();
+
+(() => {
+  const input = [{ id: 1, value: 'before' }];
+  const pipeline = new JsnqPipeline(input as JsonLike)
+    .dryRun()
+    .pipe(where('id', '===', 1), update('value', 'after'));
+  const results = pipeline.all();
+  check('compiled dryRun returns matching result nodes', results.length === 1 && (results[0].data as any).value === 'before');
+  check('compiled dryRun does not mutate input', input[0].value === 'before');
+  check('compiled dryRun preserves planned update stats', pipeline.getStats().updates === 1);
+})();
+
+(() => {
+  const specialValues: unknown[] = [NaN, Infinity, -0, 1n, new Date('2024-01-02T03:04:05Z')];
+  for (const value of specialValues) {
+    const fast = tryFastPipelineMutation([{ id: 1, value: null }], [
+      where('id', '===', 1),
+      update('value', value as never),
+    ]);
+    const actual = (fast?.value as Array<{ value: unknown }>)[0].value;
+    check(`compiled action preserves ${Object.prototype.toString.call(value)}`, Object.is(actual, value));
+  }
+
+  const shared = { nested: true };
+  const fast = tryFastPipelineMutation([{ id: 1 }, { id: 2 }], [
+    where('id', '>=', 1),
+    update('shared', shared as never),
+  ]);
+  const next = fast?.value as Array<{ shared: object }>;
+  check('compiled action preserves shared object identity', next[0].shared === shared && next[1].shared === shared);
+})();
+
+(() => {
+  const input = [{ id: 1 }];
+  const fast = tryFastPipelineMutation(input, [where('id', '===', 2), update('id', 3)]);
+  check('compiled zero-match keeps outer array identity', fast?.value === input);
 })();
 
 // --- Out-of-guard shapes: must return undefined (caller runs the pipeline) ---
@@ -179,14 +265,54 @@ expectBail('nested criterion candidate', [
 expectBail('non-function op', rows(), [{ raw: true } as never]);
 
 /* ========================================================================== */
+/*           Flat pipeline relative-insert fast path — semantics              */
+/* ========================================================================== */
+
+(() => {
+  const marker = { id: 99 };
+  const data = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+  const pipeline = new JsnqPipeline(data).pipe(
+    where('id', '>=', 2),
+    insert(marker as never, 'after'),
+  );
+  const results = pipeline.all();
+  check('flat relative insert after: preserves declared ordering',
+    data.map((item) => item.id).join(',') === '1,2,99,3,99,4,99');
+  check('flat relative insert after: preserves payload identity',
+    data[2] === marker && data[4] === marker && data[6] === marker);
+  check('flat relative insert after: result and stats parity',
+    results.length === 3 && pipeline.getStats().inserted === 3);
+})();
+
+(() => {
+  const data = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
+  new JsnqPipeline(data).pipe(
+    where('id', '>=', 2),
+    insert({ id: 88 } as never, 'before'),
+  ).all();
+  check('flat relative insert before: preserves declared ordering',
+    data.map((item) => item.id).join(',') === '1,88,2,88,3,88,4');
+})();
+
+(() => {
+  const data = [{ id: 1, children: [{ id: 2 }] }];
+  new JsnqPipeline(data).pipe(
+    where('id', '===', 2),
+    insert({ id: 3 } as never, 'after'),
+  ).all();
+  check('flat relative insert: nested candidate falls back to DFS',
+    data[0]!.children.map((item) => item.id).join(',') === '2,3');
+})();
+
+/* ========================================================================== */
 /*        Structural shortcuts (tryFastStructuralMutation) — parity           */
 /* ========================================================================== */
 
-function viaStructural(input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): unknown | undefined {
+function viaStructural(input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): unknown | undefined {
   return tryFastStructuralMutation(input, collectPipelineIntent(ops))?.value;
 }
 
-function expectStructuralParity(name: string, input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): void {
+function expectStructuralParity(name: string, input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): void {
   const snapshot = JSON.stringify(input);
   const fast = viaStructural(input, ops);
   check(`${name}: structural fast path engages`, fast !== undefined);
@@ -196,7 +322,7 @@ function expectStructuralParity(name: string, input: unknown, ops: Array<(p: Jso
   check(`${name}: input not mutated`, JSON.stringify(input) === snapshot);
 }
 
-function expectStructuralBail(name: string, input: unknown, ops: Array<(p: JsonPipeline) => JsonPipeline>): void {
+function expectStructuralBail(name: string, input: unknown, ops: Array<(p: JsnqPipeline) => JsnqPipeline>): void {
   check(`${name}: structural bails to full pipeline`, viaStructural(input, ops) === undefined);
 }
 
@@ -256,6 +382,29 @@ expectStructuralBail('structural with criteria present', rows(), [where('id', '=
 })();
 
 (() => {
+  const input = { user: { profile: { settings: { theme: 'light' }, name: 'Ada' } } };
+  const falseIntent = collectPipelineIntent([
+    where('user.profile.settings.theme', '===', 'dark'),
+    update({ theme: 'blue' } as never, undefined as never),
+  ]);
+  const falseResult = applyDeepSugarPatch(input, falseIntent.criteria, falseIntent.actions);
+  check('sugar deep: false criterion preserves input identity', falseResult === input);
+
+  const missingIntent = collectPipelineIntent([
+    where('user.profile.missing', '===', true),
+    update({ missing: false } as never, undefined as never),
+  ]);
+  check('sugar deep: missing criterion does not patch', applyDeepSugarPatch(input, missingIntent.criteria, missingIntent.actions) === input);
+
+  const multiIntent = collectPipelineIntent([
+    where('user.profile.settings.theme', '===', 'light'),
+    where('user.profile.name', '===', 'Other'),
+    update({ theme: 'blue' } as never, undefined as never),
+  ]);
+  check('sugar deep: all criteria must match', applyDeepSugarPatch(input, multiIntent.criteria, multiIntent.actions) === input);
+})();
+
+(() => {
   const input = { a: null as null | { wasNull: boolean }, keep: 1 };
   const ops = [where('a', '==', null), update({ wasNull: true } as never, undefined as never)];
   const intent = collectPipelineIntent(ops);
@@ -264,5 +413,5 @@ expectStructuralBail('structural with criteria present', rows(), [where('id', '=
   check('sugar deep: untouched keys preserved', next.keep === 1 && input.a === null);
 })();
 
-console.log(`\njsondb-fastpath-parity: ${passed} passed, ${failed} failed`);
+console.log(`\njsnq-fastpath-parity: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

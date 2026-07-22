@@ -1,5 +1,5 @@
 import { InsertPosition, SearchResultNode, SearchOptions, ComparisonOperator } from './types';
-import { isObject, dfsIterator, splitPath, getBySegments, cloneJson, setByPath, deepMerge, hasPath, resolveTargetPath, ResolvedTargetPath } from './utils';
+import { isObject, isRecordObject, dfsIterator, scanJsonMatches, splitPath, getBySegments, cloneJson, setByPath, deepMerge, hasPath, resolveTargetPath, ResolvedTargetPath } from './utils';
 import { getOperatorFn } from './operators-registry';
 import { compileCriterion } from './match';
 import { compileCriteriaPredicate } from './compiled-predicate';
@@ -14,15 +14,16 @@ export function assignWithPolicy(
   options: SearchOptions | undefined,
   stats: { warnings: string[] } | undefined,
   errorFactory: (conflictKey: string) => Error
-): void {
+): boolean {
   const effect = getAssignmentEffect(target, key, options, errorFactory);
   const keyStr = String(key);
   const exists = keyStr in target;
   if (options?.warnOnOverwrite !== false && exists) {
     stats?.warnings.push(`overwrite at key '${keyStr}'`);
   }
-  if (effect === 'skip') return;
+  if (effect === 'skip') return false;
   target[keyStr] = value;
+  return true;
 }
 
 export function getAssignmentEffect(
@@ -59,14 +60,15 @@ function assignPathWithPolicy(
   options: SearchOptions | undefined,
   stats: { warnings: string[] } | undefined,
   errorFactory: (conflictKey: string) => Error
-): void {
+): boolean {
   const effect = getPathAssignmentEffect(target, path, options, errorFactory);
   const exists = hasPath(target, path);
   if (options?.warnOnOverwrite !== false && exists) {
     stats?.warnings.push(`overwrite at key '${path}'`);
   }
-  if (effect === 'skip') return;
+  if (effect === 'skip') return false;
   setByPath(target, path, value);
+  return true;
 }
 
 function getPathAssignmentEffect(
@@ -87,9 +89,10 @@ function assignKeyOrPath(
   value: unknown,
   options: SearchOptions | undefined,
   stats: { warnings: string[] } | undefined
-): void {
-  if (key.includes('.')) assignPathWithPolicy(target, key, value, options, stats, insertConflictError);
-  else assignWithPolicy(target, key, value, options, stats, insertConflictError);
+): boolean {
+  return key.includes('.')
+    ? assignPathWithPolicy(target, key, value, options, stats, insertConflictError)
+    : assignWithPolicy(target, key, value, options, stats, insertConflictError);
 }
 
 function canAssignKeyOrPath(target: MutableRecord, key: string, options: SearchOptions | undefined): boolean {
@@ -102,24 +105,39 @@ function canAssignKeyOrPath(target: MutableRecord, key: string, options: SearchO
 /**
  * Remove the current node from its original parent container.
  */
-export function removeFromOriginal(node: SearchResultNode): void {
-  if (!node || node.parent === undefined || node.parent === null || node.parentKey === undefined) return;
+export function canRemoveFromOriginal(node: SearchResultNode): boolean {
+  if (!node || node.parent === undefined || node.parent === null || node.parentKey === undefined) return false;
   const parent = node.parent as unknown;
   if (Array.isArray(parent)) {
     if (typeof node.parentKey === 'number') {
       const idx = node.parentKey;
       if (!Number.isNaN(idx) && idx >= 0 && idx < parent.length && (parent as unknown[])[idx] === node.data) {
-        (parent as unknown[]).splice(idx, 1);
-        return;
+        return true;
       }
     }
-    const idx = (parent as unknown[]).indexOf((node as SearchResultNode).data);
-    if (!Number.isNaN(idx) && idx >= 0) (parent as unknown[]).splice(idx, 1);
-  } else if (isObject(parent)) {
+    return (parent as unknown[]).indexOf(node.data) >= 0;
+  }
+  if (isRecordObject(parent)) {
     const obj = parent as MutableRecord;
     const k = node.parentKey as string | number;
-    delete (obj as MutableRecord)[k];
+    return Object.prototype.hasOwnProperty.call(obj, k) && obj[k] === node.data;
   }
+  return false;
+}
+
+/** Remove only when the captured parent still owns this exact node. */
+export function removeFromOriginal(node: SearchResultNode): boolean {
+  if (!canRemoveFromOriginal(node)) return false;
+  const parent = node.parent as unknown;
+  if (Array.isArray(parent)) {
+    const hinted = typeof node.parentKey === 'number' ? node.parentKey : -1;
+    const index = hinted >= 0 && parent[hinted] === node.data ? hinted : parent.indexOf(node.data);
+    if (index < 0) return false;
+    parent.splice(index, 1);
+    return true;
+  }
+  delete (parent as MutableRecord)[node.parentKey as string | number];
+  return true;
 }
 
 export function assertCanInsertIntoTargetPath(
@@ -127,36 +145,124 @@ export function assertCanInsertIntoTargetPath(
   positionPath: string,
   mode: InsertPosition = 'inside',
   key?: string | number
-): void {
-  const { targetNode, targetParent } = resolveTargetPath(root, positionPath, false);
+): ResolvedTargetPath {
+  const resolved = resolveTargetPath(root, positionPath, false);
+  const { targetNode, targetParent } = resolved;
   const pos: InsertPosition = mode ?? 'inside';
 
   if (pos === 'inside') {
-    if (Array.isArray(targetNode)) return;
-    if (isObject(targetNode)) {
+    if (Array.isArray(targetNode)) return resolved;
+    if (isRecordObject(targetNode)) {
       if (typeof key !== 'string') {
         throw new Error("insert_to/moveTo/copyTo: explicit string 'key' is required when inserting into an object target (inside)");
       }
-      return;
+      return resolved;
     }
     throw new Error(`insert_to/moveTo/copyTo: target path '${positionPath}' is not insertable`);
   }
 
-  if (Array.isArray(targetParent)) return;
-  if (isObject(targetParent)) {
+  if (Array.isArray(targetParent)) return resolved;
+  if (isRecordObject(targetParent)) {
     if (typeof key !== 'string') {
       throw new Error("insert_to/moveTo/copyTo: explicit string 'key' is required when inserting before/after an object key");
     }
-    return;
+    return resolved;
   }
   throw new Error(`insert_to/moveTo/copyTo: target path '${positionPath}' has no insertable parent`);
+}
+
+/** Preflight overwrite policy and relative-target availability before source removal. */
+export function canInsertIntoResolvedTarget(
+  resolved: ResolvedTargetPath,
+  data: unknown,
+  mode: InsertPosition = 'inside',
+  key?: string | number,
+  options?: SearchOptions
+): boolean {
+  const { targetNode, targetParent, targetKey } = resolved;
+  if (mode === 'inside') {
+    if (Array.isArray(targetNode)) return true;
+    if (!isRecordObject(targetNode) || typeof key !== 'string') return false;
+    if (!key.includes('.') && Array.isArray(targetNode[key])) return true;
+    return canAssignKeyOrPath(targetNode, key, options);
+  }
+  if (Array.isArray(targetParent)) {
+    if (typeof targetKey === 'number' && (targetNode === undefined || targetNode === null)) return true;
+    return targetParent.indexOf(targetNode) >= 0;
+  }
+  return isRecordObject(targetParent) && typeof targetKey === 'string' && typeof key === 'string'
+    ? canAssignKeyOrPath(targetParent, key, options)
+    : false;
+}
+
+function containsObjectReference(root: unknown, candidate: unknown): boolean {
+  if (!isObject(root) || !isObject(candidate)) return false;
+  const stack: object[] = [root];
+  const seen = new WeakSet<object>();
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current === candidate) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (let i = 0; i < current.length; i++) {
+        if (isObject(current[i])) stack.push(current[i] as object);
+      }
+    } else {
+      const values = Object.values(current);
+      for (let i = 0; i < values.length; i++) {
+        if (isObject(values[i])) stack.push(values[i] as object);
+      }
+    }
+  }
+  return false;
+}
+
+/** True when inserting `source` at `target` would attach it below itself. */
+export function wouldCreateMoveCycle(
+  source: unknown,
+  target: ResolvedTargetPath | SearchResultNode,
+  mode: InsertPosition = 'inside'
+): boolean {
+  if (!isObject(source)) return false;
+  const targetNode = 'targetNode' in target ? target.targetNode : target.data;
+  const targetParent = 'targetParent' in target ? target.targetParent : target.parent;
+  if (targetNode === source) return true;
+  const container = mode === 'inside' ? targetNode : targetParent;
+  if (containsObjectReference(source, container)) return true;
+  // A missing path resolves to a detached placeholder. Its existing parent still
+  // reveals whether path creation would happen below the source.
+  return mode === 'inside' && containsObjectReference(source, targetParent);
+}
+
+/** O(path depth) cycle guard for moveTo(path), including aliased source branches. */
+export function wouldCreateMoveCycleAtPath(root: unknown, source: unknown, positionPath: string): boolean {
+  if (!isObject(source)) return false;
+  const segments = splitPath(positionPath);
+  let node = root;
+  if (node === source) return true;
+  for (let i = 0; i < segments.length; i++) {
+    if (Array.isArray(node)) {
+      const index = Number(segments[i]);
+      if (!Number.isInteger(index) || index < 0 || index >= node.length) return false;
+      node = node[index];
+    } else if (isRecordObject(node)) {
+      const key = segments[i]!;
+      if (!Object.prototype.hasOwnProperty.call(node, key)) return false;
+      node = node[key];
+    } else {
+      return false;
+    }
+    if (node === source) return true;
+  }
+  return false;
 }
 
 /**
  * Insert data relative to a reference node (inside/before/after).
  */
-export function insertRelative(ref: SearchResultNode, data: unknown, position: InsertPosition = 'inside', key?: string | number, options?: SearchOptions, stats?: { warnings: string[] }): void {
-  if (!ref) return;
+export function insertRelative(ref: SearchResultNode, data: unknown, position: InsertPosition = 'inside', key?: string | number, options?: SearchOptions, stats?: { warnings: string[] }): boolean {
+  if (!ref) return false;
   if (position === 'inside') {
     if (Array.isArray(ref.data)) {
       if (typeof key === 'number') {
@@ -165,7 +271,8 @@ export function insertRelative(ref: SearchResultNode, data: unknown, position: I
       } else {
         (ref.data as unknown[]).push(data);
       }
-    } else if (isObject(ref.data)) {
+      return true;
+    } else if (isRecordObject(ref.data)) {
       // INSIDE on object:
       // - if explicit string key provided and points to array -> push to that array
       // - if explicit string key provided -> set normally (supports dotted path)
@@ -175,10 +282,11 @@ export function insertRelative(ref: SearchResultNode, data: unknown, position: I
         const existingValue = key.includes('.') ? undefined : (ref.data as MutableRecord)[key];
         if (Array.isArray(existingValue)) {
           (existingValue as unknown[]).push(data);
+          return true;
         } else {
-          assignKeyOrPath(ref.data as MutableRecord, key, data, options, stats);
+          return assignKeyOrPath(ref.data as MutableRecord, key, data, options, stats);
         }
-      } else if (isObject(data)) {
+      } else if (isRecordObject(data)) {
         // Merge object properties into the target object (preserving reference)
         const merged = deepMerge(ref.data, data, {
           arrayStrategy: options?.arrayMergeStrategy,
@@ -187,44 +295,48 @@ export function insertRelative(ref: SearchResultNode, data: unknown, position: I
         const rec = ref.data as MutableRecord;
         for (const k of Object.keys(rec)) delete rec[k];
         Object.assign(rec, merged as Record<string, unknown>);
+        return true;
       } else {
         stats?.warnings.push?.('insert inside object without key ignored for non-object payload');
+        return false;
       }
     }
-    return;
+    return false;
   }
   const parent = ref.parent;
-  if (!parent) return;
+  if (!parent) return false;
   if (Array.isArray(parent)) {
     // IMPORTANT: Always use indexOf for arrays because parentKey may be stale after previous removeFromOriginal
     const actualIdx = (parent as unknown[]).indexOf(ref.data);
     if (actualIdx !== -1) {
       if (position === 'before') (parent as unknown[]).splice(actualIdx, 0, data);
       else (parent as unknown[]).splice(actualIdx + 1, 0, data);
+      return true;
     }
-  } else if (isObject(parent)) {
+  } else if (isRecordObject(parent)) {
     // For before/after relative to an object key: require explicit key, do not auto-generate
     if (options?.objectOrderWarning !== false) {
       stats?.warnings.push?.('before/after on object: property order is not semantically stable in JS');
     }
     if (typeof key !== 'string' || key.length === 0) {
       stats?.warnings.push?.('before/after on object requires explicit string key; operation skipped');
-      return;
+      return false;
     }
-    assignKeyOrPath(parent as MutableRecord, key, data, options, stats);
+    return assignKeyOrPath(parent as MutableRecord, key, data, options, stats);
   }
+  return false;
 }
 
-function canInsertRelative(ref: SearchResultNode, data: unknown, position: InsertPosition = 'inside', key?: string | number, options?: SearchOptions): boolean {
+export function canInsertRelative(ref: SearchResultNode, data: unknown, position: InsertPosition = 'inside', key?: string | number, options?: SearchOptions): boolean {
   if (!ref) return false;
   if (position === 'inside') {
     if (Array.isArray(ref.data)) return true;
-    if (isObject(ref.data)) {
+    if (isRecordObject(ref.data)) {
       if (typeof key === 'string') {
         if (!key.includes('.') && Array.isArray((ref.data as MutableRecord)[key])) return true;
         return canAssignKeyOrPath(ref.data as MutableRecord, key, options);
       }
-      return isObject(data);
+      return isRecordObject(data);
     }
     return false;
   }
@@ -234,7 +346,7 @@ function canInsertRelative(ref: SearchResultNode, data: unknown, position: Inser
   if (Array.isArray(parent)) {
     return (parent as unknown[]).indexOf(ref.data) !== -1;
   }
-  if (!isObject(parent) || typeof key !== 'string' || key.length === 0) return false;
+  if (!isRecordObject(parent) || typeof key !== 'string' || key.length === 0) return false;
   return canAssignKeyOrPath(parent as MutableRecord, key, options);
 }
 
@@ -262,11 +374,16 @@ export function insertIntoTargetPath(
       } else {
         (targetNode as unknown[]).push(data);
       }
-    } else if (isObject(targetNode)) {
+    } else if (isRecordObject(targetNode)) {
       if (typeof key !== 'string') {
         throw new Error("insert_to/moveTo/copyTo: explicit string 'key' is required when inserting into an object target (inside)");
       }
-      assignKeyOrPath(targetNode as MutableRecord, key, data, options, stats);
+      const existingValue = key.includes('.') ? undefined : (targetNode as MutableRecord)[key];
+      if (Array.isArray(existingValue)) {
+        existingValue.push(data);
+      } else {
+        assignKeyOrPath(targetNode as MutableRecord, key, data, options, stats);
+      }
     }
     return;
   }
@@ -283,7 +400,7 @@ export function insertIntoTargetPath(
         else (targetParent as unknown[]).splice(idx + 1, 0, data);
       }
     }
-  } else if (isObject(targetParent) && typeof targetKey === 'string') {
+  } else if (isRecordObject(targetParent) && typeof targetKey === 'string') {
     if (typeof key !== 'string') {
       throw new Error("insert_to/moveTo/copyTo: explicit string 'key' is required when inserting before/after an object key");
     }
@@ -297,7 +414,8 @@ export function selectTargets(
   options: SearchOptions,
   targetKey: string,
   targetOperator: ComparisonOperator,
-  targetValue: unknown
+  targetValue: unknown,
+  buildMeta = true
 ): SearchResultNode[] {
   const targets: SearchResultNode[] = [];
   const segs = splitPath(targetKey);
@@ -346,17 +464,15 @@ export function selectTargets(
     }
     return targets;
   }
-  for (const n of dfsIterator(root, {
+  scanJsonMatches(root, {
     maxDepth: options.maxDepth ?? 10,
     includeArrays: !!options.includeArrays,
     includeObjects: !!options.includeObjects,
-    buildMeta: true,
+    buildMeta,
     returnPaths: false
-  })) {
-    if (targetPred ? targetPred(n.data) : opFn(getBySegments(n.data, segs), targetValue)) {
-      targets.push(n as SearchResultNode);
-    }
-  }
+  }, (node) => targetPred ? targetPred(node) : opFn(getBySegments(node, segs), targetValue), (n) => {
+    targets.push(n as SearchResultNode);
+  });
   return targets;
 }
 
@@ -370,9 +486,25 @@ function chooseEffectiveKey(
   if (key !== undefined) return key;
   const srcKey = typeof src.parentKey === 'string' ? src.parentKey : undefined;
   const idKey = getDefaultIdKey(src.data);
-  if (pos === 'inside' && isObject(target.data)) return srcKey ?? idKey;
-  if (pos !== 'inside' && isObject(target.parent)) return idKey ?? srcKey;
+  if (pos === 'inside' && isRecordObject(target.data)) return srcKey ?? idKey;
+  if (pos !== 'inside' && isRecordObject(target.parent)) return idKey ?? srcKey;
   return undefined;
+}
+
+function getPlannedObjectSlot(
+  target: SearchResultNode,
+  pos: InsertPosition,
+  key: string | number | undefined
+): { owner: MutableRecord; key: string } | null {
+  if (typeof key !== 'string') return null;
+  if (pos === 'inside' && isRecordObject(target.data)) {
+    if (!key.includes('.') && Array.isArray((target.data as MutableRecord)[key])) return null;
+    return { owner: target.data as MutableRecord, key };
+  }
+  if (pos !== 'inside' && isRecordObject(target.parent)) {
+    return { owner: target.parent as MutableRecord, key };
+  }
+  return null;
 }
 
 // Fan-out helper for move/copy matches into targets
@@ -383,28 +515,74 @@ export function fanoutMatchesToTargets(
   mode: InsertPosition = 'inside',
   key?: string | number,
   options?: SearchOptions,
-  stats?: { warnings: string[] }
+  stats?: { warnings: string[] },
+  dryRun = false
 ): number {
   const pos: InsertPosition = mode ?? 'inside';
-  const ordered = kind === 'move' ? orderMatchesForMove(matches) : matches;
+  const plans: Array<{
+    src: SearchResultNode;
+    targets: Array<{ target: SearchResultNode; effectiveKey: string | number | undefined }>;
+  }> = [];
+  const reservedSlots = new WeakMap<object, Set<string>>();
   let applied = 0;
-  for (const src of ordered) {
-    const element = kind === 'copy' ? cloneJson(src.data) : src.data;
+  for (const src of matches) {
+    if (kind === 'move' && !canRemoveFromOriginal(src)) {
+      stats?.warnings.push?.('move_matches: source is not attached to a removable parent; source left in place');
+      continue;
+    }
     const plannedTargets: Array<{ target: SearchResultNode; effectiveKey: string | number | undefined }> = [];
     for (const t of targets) {
+      if (kind === 'move' && wouldCreateMoveCycle(src.data, t, pos)) continue;
       const effectiveKey = chooseEffectiveKey(src, t, pos, key);
-      if (canInsertRelative(t, element, pos, effectiveKey, options)) {
-        plannedTargets.push({ target: t, effectiveKey });
+      // Match fan-out into an object follows the explicit-key/id contract. The
+      // keyless object merge remains available to the standalone insert operator.
+      const hasObjectKey = pos !== 'inside' || !isRecordObject(t.data) || effectiveKey !== undefined;
+      if (!hasObjectKey || !canInsertRelative(t, src.data, pos, effectiveKey, options)) continue;
+
+      const slot = getPlannedObjectSlot(t, pos, effectiveKey);
+      if (slot) {
+        let keys = reservedSlots.get(slot.owner);
+        if (!keys) reservedSlots.set(slot.owner, keys = new Set<string>());
+        if (keys.has(slot.key)) {
+          const policy = options?.overwritePolicy ?? 'overwrite';
+          if (policy === 'error') throw insertConflictError(slot.key);
+          if (policy === 'skip') {
+            if (options?.warnOnOverwrite !== false) stats?.warnings.push(`overwrite at key '${slot.key}'`);
+            continue;
+          }
+        }
+        keys.add(slot.key);
       }
+      plannedTargets.push({ target: t, effectiveKey });
     }
     if (kind === 'move' && plannedTargets.length === 0) {
       stats?.warnings.push?.('move_matches: no insertable targets; source left in place');
       continue;
     }
-    if (kind === 'move') removeFromOriginal(src);
-    for (const planned of plannedTargets) {
-      insertRelative(planned.target, element, pos, planned.effectiveKey, options, stats);
-      applied++;
+    plans.push({ src, targets: plannedTargets });
+  }
+
+  if (kind === 'move' && !dryRun) {
+    for (const src of orderMatchesForMove(plans.map((plan) => plan.src))) {
+      if (!removeFromOriginal(src)) {
+        throw new Error('move_matches: source changed before it could be removed');
+      }
+    }
+  }
+
+  // Insert in original match order after all removals. This preserves source
+  // ordering while retaining descending-index removal safety.
+  for (const plan of plans) {
+    for (let i = 0; i < plan.targets.length; i++) {
+      const planned = plan.targets[i];
+      if (dryRun) {
+        applied++;
+        continue;
+      }
+      // Every copy target owns its clone. A multi-target move keeps the original
+      // in the first target and clones subsequent targets to avoid shared state.
+      const element = kind === 'copy' || i > 0 ? cloneJson(plan.src.data) : plan.src.data;
+      if (insertRelative(planned.target, element, pos, planned.effectiveKey, options, stats)) applied++;
     }
   }
   return applied;

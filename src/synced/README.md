@@ -1,14 +1,14 @@
-# jsondb
+# jsnq
 
-Krótkie wprowadzenie do `JsonPipeline<TData>`, ścieżek, akcji i rejestrowania własnych operatorów porównań.
+Krótkie wprowadzenie do `JsnqPipeline<TData>`, ścieżek, akcji i rejestrowania własnych operatorów porównań.
 
 ## Instalacja / import
 
 ```ts
-import { JsonPipeline, where, update, insert, deleteKey, deleteElement, moveTo, insertTo, moveToMatches, copyTo, registerOperator } from './jsondb';
+import { JsnqPipeline, where, update, insert, deleteKey, deleteElement, moveTo, insertTo, moveToMatches, copyTo, registerOperator } from './jsnq';
 ```
 
-## Typowanie danych: JsonPipeline<TData>
+## Typowanie danych: JsnqPipeline<TData>
 
 Możesz typować dane wejściowe, aby zyskać lepsze podpowiedzi oraz bezpieczeństwo typów.
 
@@ -21,7 +21,7 @@ const data: MyData = {
   users: [ { id: 1, name: 'Alice' }, { id: 2, name: 'Bob' } ]
 };
 
-const p = new JsonPipeline<MyData>(data)
+const p = new JsnqPipeline<MyData>(data)
   .pipe(
     where('users[0].name', '===', 'Alice'),
     update('users[0].profile.age', (current) => (typeof current === 'number' ? current + 1 : 30))
@@ -43,7 +43,7 @@ Wewnętrznie ścieżki są parsowane do segmentów, a brakujące gałęzie są t
 Przykłady:
 
 ```ts
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(
     where('name', 'regex', '^A'),
     insert({ meta: {} }, 'inside'),
@@ -76,17 +76,17 @@ Operatory modyfikacji: `update(path, value)` zastępuje wartość; `replace(path
 Możesz dodać własny operator (np. `isEven`) i użyć go w `where()`:
 
 ```ts
-import { registerOperator, JsonPipeline, where } from './jsondb';
+import { registerOperator, JsnqPipeline, where } from './jsnq';
 
 registerOperator('isEven', (actual) => typeof actual === 'number' && actual % 2 === 0);
 
 const data = { values: [1, 2, 3, 4] };
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(where('values[1]', 'isEven', undefined))
   .all();
 ```
 
-Operator jest rejestrowany globalnie dla bieżącego procesu i będzie dostępny dla wszystkich instancji `JsonPipeline`.
+Operator jest rejestrowany globalnie dla bieżącego procesu i będzie dostępny dla wszystkich instancji `JsnqPipeline`.
 
 ## Wskazówki dotyczące wydajności
 
@@ -95,9 +95,9 @@ Operator jest rejestrowany globalnie dla bieżącego procesu i będzie dostępny
 
 ## Tryby immutable i dryRun
 
-- Włącz niemutowalność explicite: `new JsonPipeline(data, { immutable: true })` lub fluent: `new JsonPipeline(data).immutable()`.
-- Tryb `immutable: 'auto'` klonuje tylko, jeśli są akcje modyfikujące: `new JsonPipeline(data, { immutable: 'auto' })` lub `new JsonPipeline(data).immutable('auto')`.
-- Podgląd bez modyfikacji: `new JsonPipeline(data).dryRun()`; operacje i ostrzeżenia znajdziesz w `getStats()`.
+- Włącz niemutowalność explicite: `new JsnqPipeline(data, { immutable: true })` lub fluent: `new JsnqPipeline(data).immutable()`.
+- Tryb `immutable: 'auto'` klonuje tylko, jeśli są akcje modyfikujące: `new JsnqPipeline(data, { immutable: 'auto' })` lub `new JsnqPipeline(data).immutable('auto')`.
+- Podgląd bez modyfikacji: `new JsnqPipeline(data).dryRun()`; operacje i ostrzeżenia znajdziesz w `getStats()`.
 
 ## Ostrzeżenia ścieżek: `strictPathsWarn`
 
@@ -108,10 +108,10 @@ Operator jest rejestrowany globalnie dla bieżącego procesu i będzie dostępny
 Przykład:
 
 ```ts
-import { JsonPipeline, where, update, deleteKey, insertTo } from './jsondb';
+import { JsnqPipeline, where, update, deleteKey, insertTo } from './jsnq';
 
 const data = {};
-const p = new JsonPipeline(data, { strictPathsWarn: true })
+const p = new JsnqPipeline(data, { strictPathsWarn: true })
   .pipe(
     update('a.b', 1),          // ostrzeżenie: ścieżka nie istniała
     insertTo('x.y', { z: 1 }), // ostrzeżenie: cel nie istniał
@@ -155,24 +155,24 @@ Uwaga: dotyczy to tylko operacji na ścieżkę. Operatory fanout (`moveToMatches
 ### Przykłady po zmianie
 
 ```ts
-import { JsonPipeline, moveTo, insertTo, copyTo } from './jsondb';
+import { JsnqPipeline, moveTo, insertTo, copyTo } from './jsnq';
 
 const store = { basket: { items: {} }, catalog: { entry: { id: 1 } } };
 
 // INSIDE do obiektu: wymagany jawny klucz
-new JsonPipeline(store)
+new JsnqPipeline(store)
   .pipe(copyTo('basket.items', 'inside', 'entry1'))
   .all();
 // OK: basket.items.entry1 = <skopiowany element>
 
 // BEFORE/AFTER względem obiektu: również wymagany jawny klucz
-new JsonPipeline(store)
+new JsnqPipeline(store)
   .pipe(moveTo('basket', 'after', 'movedEntry'))
   .all();
 // OK: basket.movedEntry = <przeniesiony element>
 
 // Próba bez klucza → wyjątek
-new JsonPipeline(store)
+new JsnqPipeline(store)
   .pipe(insertTo('basket.items', { a: 1 }, 'inside'))
   .all(); // Error: explicit string 'key' is required ...
 ```
@@ -211,7 +211,7 @@ W `SearchOptions` możesz ustawić zachowanie dla nieznanych operatorów porówn
 Przykład:
 
 ```ts
-new JsonPipeline(data, { operatorsStrict: 'warn' })
+new JsnqPipeline(data, { operatorsStrict: 'warn' })
   .pipe(where('id', 'nonexistent-op' as any, 1))
   .count();
 // warnings: ["unknown comparison operator 'nonexistent-op'"]
@@ -229,7 +229,7 @@ Oprócz dot-notacji dostępna jest typowa notacja nawiasowa w typach (np. `users
 Parser ścieżek (`splitPath`) używa ograniczonego cache z ewikcją FIFO o domyślnej wielkości 1000 wpisów. Możesz ją zmienić:
 
 ```ts
-import { setPathCacheLimit } from './jsondb';
+import { setPathCacheLimit } from './jsnq';
 setPathCacheLimit(2000);
 ```
 
@@ -258,19 +258,19 @@ W trybie absolutnym jako cele wybrane zostają węzły, których ścieżka z kor
 ## Przykłady: inside z indeksem (tablica)
 
 ```ts
-import { JsonPipeline, insertTo, moveTo } from './jsondb';
+import { JsnqPipeline, insertTo, moveTo } from './jsnq';
 
 const data = { items: [1, 2, 3] };
 
 // Wstaw 999 na pozycję 1 (między 1 i 2)
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(insertTo('items', 999, 'inside', 1))
   .all();
 // data.items -> [1, 999, 2, 3]
 
 // Przenieś dopasowany element na indeks 0 w docelowej tablicy
 const store = { baskets: [{ items: [10, 20] }], catalog: { items: [{ id: 1 }, { id: 2 }] } };
-new JsonPipeline(store)
+new JsnqPipeline(store)
   .pipe(
     // wybierz element o id=2
     where('id', '===', 2),
@@ -286,11 +286,11 @@ Uwaga: liczbowy `key` działa tylko przy `inside` do tablic (wstawianie przez `s
 ## Przykłady: mergeUpdate
 
 ```ts
-import { JsonPipeline, where, mergeUpdate } from './jsondb';
+import { JsnqPipeline, where, mergeUpdate } from './jsnq';
 
 const data = { user: { name: 'Alice', meta: { rating: 4, info: { x: 1 } } } };
 
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(
     where('name', '===', 'Alice'),
     mergeUpdate('meta', { badge: 'gold', rating: 10 })
@@ -313,7 +313,7 @@ Operatory `*Matches` różnią się zakresem celów:
 Przykłady:
 
 ```ts
-import { JsonPipeline, where, moveToMatches, moveToAll } from './jsondb';
+import { JsnqPipeline, where, moveToMatches, moveToAll } from './jsnq';
 
 const data = {
   catalog: { items: [ {id: 1}, {id: 2} ] },
@@ -321,12 +321,12 @@ const data = {
 };
 
 // Wszystkie źródła (id=1 i id=2) → do PIERWSZEGO celu (np. baskets[0].items)
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(where('id', '>=', 1), moveToMatches('items', 'isArray', true, 'inside'))
   .all();
 
 // Tylko pierwsze źródło (id=1) → do WSZYSTKICH celów (baskets[*].items)
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(where('id', '>=', 1), moveToAll('items', 'isArray', true, 'inside'))
   .first();
 ```
@@ -334,12 +334,12 @@ new JsonPipeline(data)
 Przykład z targetem absolutnym (prefiks `$`):
 
 ```ts
-import { JsonPipeline, where, copyToMatches } from './jsondb';
+import { JsnqPipeline, where, copyToMatches } from './jsnq';
 
 const data = { catalog: { items: [{ id: 1 }] }, baskets: [{ items: [] }, { items: [] }] };
 
 // Skopiuj dopasowany element TYLKO do jednego, absolutnie wskazanego celu
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(
     where('id', '===', 1),
     copyToMatches('$.baskets[0].items', '===', true, 'inside')
@@ -351,11 +351,11 @@ new JsonPipeline(data)
 Analogicznie z `moveToAll` i absolutnym celem (cel i tak jest jeden):
 
 ```ts
-import { JsonPipeline, where, moveToAll } from './jsondb';
+import { JsnqPipeline, where, moveToAll } from './jsnq';
 
 const data = { catalog: { items: [{ id: 2 }] }, baskets: [{ items: [] }, { items: [] }] };
 
-new JsonPipeline(data)
+new JsnqPipeline(data)
   .pipe(
     where('id', '===', 2),
     moveToAll('$.baskets[1].items', '===', true, 'inside')

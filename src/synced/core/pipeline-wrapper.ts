@@ -1,8 +1,9 @@
-import JsonPipeline from './pipeline';
+import JsnqPipeline from './pipeline';
 import { JsonOperator, JsonLike } from './types';
+import { cloneJsonData } from './data-engine';
 
 /**
- * Wrapper for JsonPipeline that provides auto-immutability for zoneless change detection.
+ * Wrapper for JsnqPipeline that provides auto-immutability for zoneless change detection.
  *
  * Usage:
  *   const wrapper = new PipelineWrapper(data);
@@ -10,18 +11,20 @@ import { JsonOperator, JsonLike } from './types';
  *   const newData = wrapper.data; // Assign back to store
  */
 export class PipelineWrapper<T extends JsonLike = JsonLike> {
-  private _pipeline: JsonPipeline<T>;
+  private _pipeline: JsnqPipeline<T>;
 
-  constructor(data: T, options?: { autoClone?: boolean }) {
+  constructor(data: T, options?: { autoClone?: boolean; trackOperations?: boolean }) {
     // Auto-clone by default for immutability
-    const clonedData = (options?.autoClone !== false) ? structuredClone(data) : data;
-    this._pipeline = new JsonPipeline(clonedData as T);
+    const clonedData = (options?.autoClone !== false) ? cloneJsonData(data) : data;
+    this._pipeline = new JsnqPipeline(clonedData as T, {
+      trackOperations: options?.trackOperations ?? true,
+    });
   }
 
   /**
    * Apply pipeline operators
    */
-  pipeline(...ops: Array<JsonOperator<JsonPipeline<T>>>): this {
+  pipeline(...ops: Array<JsonOperator<JsnqPipeline<T>>>): this {
     this._pipeline = ops.reduce((acc, op) => op(acc), this._pipeline);
     return this;
   }

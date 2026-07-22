@@ -1,5 +1,5 @@
 /**
- * This entire synced/ directory is a verbatim copy from store4/store/jsondb/
+ * This entire synced/ directory is a verbatim copy from store4/store/jsnq/
  * DO NOT EDIT ANYTHING HERE.
  * Changes must come from the canonical source.
  * See PLAN.md v2 §0.3 for enforcement.

@@ -14,11 +14,11 @@ import {
   MoveMatchesOverwriteAction,
   JsonLike,
 } from './types';
-import { dfsIterator, getBySegments, isObject, resolveTargetWithPathCreation, hasPath, cloneJson, deepArrayIterator } from './utils';
+import { dfsIterator, scanJsonMatches, getBySegments, isObject, isRecordObject, resolveTargetWithPathCreation, hasPath, cloneJson, deepArrayIterator } from './utils';
 import { criteriaMatch, criterionMatches, enforceKnownOperator, StrictOperatorContext } from './match';
 import { compileCriteriaPredicate } from './compiled-predicate';
 import { applyValueAction, prepareActions, PreparedAction } from './actions';
-import { assertCanInsertIntoTargetPath, assignWithPolicy, getAssignmentEffect, insertIntoTargetPath, insertRelative, removeFromOriginal, selectTargets, fanoutMatchesToTargets, orderMatchesForMove } from './ops';
+import { assertCanInsertIntoTargetPath, assignWithPolicy, canInsertIntoResolvedTarget, canInsertRelative, canRemoveFromOriginal, getAssignmentEffect, insertIntoTargetPath, insertRelative, removeFromOriginal, selectTargets, fanoutMatchesToTargets, orderMatchesForMove, wouldCreateMoveCycle, wouldCreateMoveCycleAtPath } from './ops';
 import { executeFlatArrayFastPath } from './flat-array-fast-path';
 
 // Actions that need parent/index metadata from the traversal to apply correctly.
@@ -40,7 +40,7 @@ const MATCH_FANOUT: Partial<Record<Action['type'], { kind: 'move' | 'copy'; allT
   copy_first_to_matches: { kind: 'copy', allTargets: true },
 };
 
-export class JsonPipeline<TData extends JsonLike = JsonLike> implements PipelineLike<TData> {
+export class JsnqPipeline<TData extends JsonLike = JsonLike> implements PipelineLike<TData> {
   private _data: TData;
   get data(): TData { return this._data; }
   readonly criteria: ReadonlyArray<CompiledCriterion>;
@@ -84,8 +84,8 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     this.actions = actions;
   }
 
-  private spawn(next: { data?: TData; options?: SearchOptions; criteria?: CompiledCriterion[]; actions?: Action[] }): JsonPipeline<TData> {
-    return new JsonPipeline<TData>(
+  private spawn(next: { data?: TData; options?: SearchOptions; criteria?: CompiledCriterion[]; actions?: Action[] }): JsnqPipeline<TData> {
+    return new JsnqPipeline<TData>(
       next.data ?? this.data,
       next.options ?? (this.options as SearchOptions),
       next.criteria ?? (this.criteria as CompiledCriterion[]),
@@ -93,25 +93,25 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     );
   }
 
-  with(next: { data?: TData; options?: SearchOptions; criteria?: CompiledCriterion[]; actions?: Action[] }): JsonPipeline<TData> {
+  with(next: { data?: TData; options?: SearchOptions; criteria?: CompiledCriterion[]; actions?: Action[] }): JsnqPipeline<TData> {
     return this.spawn(next);
   }
 
-  immutable(mode: true | 'auto' = true): JsonPipeline<TData> {
+  immutable(mode: true | 'auto' = true): JsnqPipeline<TData> {
     return this.with({ options: { ...(this.options as SearchOptions), immutable: mode } });
   }
 
-  dryRun(enabled: boolean = true): JsonPipeline<TData> {
+  dryRun(enabled: boolean = true): JsnqPipeline<TData> {
     return this.with({ options: { ...(this.options as SearchOptions), dryRun: enabled } });
   }
 
-  pipeline(...ops: Array<JsonOperator<JsonPipeline<TData>>>): JsonPipeline<TData> { return this.pipe(...ops); }
+  pipeline(...ops: Array<JsonOperator<JsnqPipeline<TData>>>): JsnqPipeline<TData> { return this.pipe(...ops); }
 
-  pipe(...ops: Array<JsonOperator<JsonPipeline<TData>>>): JsonPipeline<TData> {
-    return ops.reduce<JsonPipeline<TData>>((acc, op) => op(acc), this);
+  pipe(...ops: Array<JsonOperator<JsnqPipeline<TData>>>): JsnqPipeline<TData> {
+    return ops.reduce<JsnqPipeline<TData>>((acc, op) => op(acc), this);
   }
 
-  clone(): JsonPipeline<TData> { return this.spawn({}); }
+  clone(): JsnqPipeline<TData> { return this.spawn({}); }
 
   first(): TData | null;
   first<T = unknown>(): T | null;
@@ -205,28 +205,46 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
       }
 
       const preparedActions = this.actions.length > 0 ? this.getPreparedActions() : null;
+      // Moving/copying while the DFS iterator is still walking the same graph can make
+      // an inserted node visible to that iterator and apply the action twice. Collect
+      // the stable match set first, then preserve the declared action order per match.
+      const deferNodeActions = this.actions.some((action) => action.type === 'insert' || action.type === 'move' || action.type === 'copy');
 
-      for (const node of dfsIterator(this.data, {
-        maxDepth: this.options.maxDepth ?? 10,
-        includeArrays: !!this.options.includeArrays,
-        includeObjects: !!this.options.includeObjects,
-        buildMeta: needMeta,
-        returnPaths: needPaths,
-      })) {
-        this.stats.nodesVisited++;
-        this.stats.maxDepth = Math.max(this.stats.maxDepth, node.depth);
-
-        if (hasDeepArrayCriteria) {
+      if (hasDeepArrayCriteria) {
+        for (const node of dfsIterator(this.data, {
+          maxDepth: this.options.maxDepth ?? 10,
+          includeArrays: !!this.options.includeArrays,
+          includeObjects: !!this.options.includeObjects,
+          buildMeta: needMeta,
+          returnPaths: needPaths,
+        })) {
+          this.stats.nodesVisited++;
+          this.stats.maxDepth = Math.max(this.stats.maxDepth, node.depth);
           // Special handling for deep array criteria
-          if (this.matchesSequential(node, out, seenDeepObjects, seenDeepPathKeys)) {
+          if (this.matchesSequential(node, out, seenDeepObjects, seenDeepPathKeys, !deferNodeActions)) {
             if (limit && out.length >= limit) break;
           }
-        } else if (this.criteria.length === 0 || (compiledPred ? compiledPred(node.data) : criteriaMatch(this.criteria, node.data, this.options, this.strictCtx))) {
-          this.stats.resultsFound++;
-          if (preparedActions) this.applyActions(node, preparedActions);
-          out.push(node);
-          if (limit && out.length >= limit) break;
         }
+      } else {
+        const scan = scanJsonMatches(this.data, {
+          maxDepth: this.options.maxDepth ?? 10,
+          includeArrays: !!this.options.includeArrays,
+          includeObjects: !!this.options.includeObjects,
+          buildMeta: needMeta,
+          returnPaths: needPaths,
+        }, (node) => this.criteria.length === 0 || (
+          compiledPred ? compiledPred(node) : criteriaMatch(this.criteria, node, this.options, this.strictCtx)
+        ), (node) => {
+          this.stats.resultsFound++;
+          if (preparedActions && !deferNodeActions) this.applyActions(node, preparedActions);
+          out.push(node as SearchResultNode<TData, unknown, string | number>);
+          if (limit && out.length >= limit) return false;
+        });
+        this.stats.nodesVisited += scan.nodesVisited;
+        this.stats.maxDepth = Math.max(this.stats.maxDepth, scan.maxDepth);
+      }
+      if (preparedActions && deferNodeActions) {
+        for (const node of out) this.applyActions(node, preparedActions);
       }
       this.applyGlobalActions(out);
     } finally {
@@ -269,7 +287,8 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     node: SearchResultNode,
     out: SearchResultNode<TData, unknown, string | number>[],
     seenDeepObjects?: WeakSet<object>,
-    seenDeepPathKeys?: Set<string>
+    seenDeepPathKeys?: Set<string>,
+    applyActionsNow = true
   ): boolean {
     // Process criteria sequentially - each deep arrayKey criterion descends into nested elements
     let currentNodes: SearchResultNode[] = [node];
@@ -314,7 +333,7 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
         continue;
       }
       this.stats.resultsFound++;
-      if (this.actions.length > 0) this.applyActions(finalNode, this.getPreparedActions());
+      if (applyActionsNow && this.actions.length > 0) this.applyActions(finalNode, this.getPreparedActions());
       out.push(finalNode as SearchResultNode<TData, unknown, string | number>);
       emitted = true;
     }
@@ -392,30 +411,33 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
       return out;
     }
 
-    const stack: Array<{ node: unknown; depth: number }> = [{ node: this.data, depth: 0 }];
+    const nodes: unknown[] = [this.data];
+    const depths: number[] = [0];
 
-    while (stack.length) {
-      const frame = stack.pop()!;
-      if (frame.depth > maxDepth) continue;
-      const node = frame.node;
+    while (nodes.length) {
+      const node = nodes.pop();
+      const depth = depths.pop()!;
       this.stats.nodesVisited++;
-      if (frame.depth > this.stats.maxDepth) this.stats.maxDepth = frame.depth;
+      if (depth > this.stats.maxDepth) this.stats.maxDepth = depth;
 
       if (pred ? pred(node) : criteriaMatch(this.criteria, node, this.options, this.strictCtx)) {
         this.stats.resultsFound++;
-        out.push({ data: node, depth: frame.depth });
+        out.push({ data: node, depth });
         if (limit && out.length >= limit) break;
       }
 
-      const nextDepth = frame.depth + 1;
+      if (depth >= maxDepth) continue;
+      const nextDepth = depth + 1;
       if (Array.isArray(node) && includeArrays) {
         for (let i = node.length - 1; i >= 0; i--) {
-          stack.push({ node: node[i], depth: nextDepth });
+          nodes.push(node[i]);
+          depths.push(nextDepth);
         }
       } else if (isObject(node) && includeObjects) {
         const keys = Object.keys(node);
         for (let i = keys.length - 1; i >= 0; i--) {
-          stack.push({ node: node[keys[i]], depth: nextDepth });
+          nodes.push(node[keys[i]]);
+          depths.push(nextDepth);
         }
       }
     }
@@ -430,16 +452,27 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
   ): void {
     const { position, mode, key } = action;
     const isCopy = kind === 'copy';
+    // Both operations share the same insertion contract. Validate before clone,
+    // removal, path creation, or stats so an invalid copy cannot become a silent
+    // no-op reported as successful.
+    const validatedTarget = assertCanInsertIntoTargetPath(this.data, position, mode, key);
+    if (!canInsertIntoResolvedTarget(validatedTarget, node.data, mode, key, this.options)) {
+      if (this.options.warnOnOverwrite !== false) this.stats.warnings.push(`${kind}: target write skipped by overwrite policy`);
+      return;
+    }
+    if (!isCopy) {
+      if (!canRemoveFromOriginal(node)) throw new Error('move: source is not attached to a removable parent');
+      if (wouldCreateMoveCycleAtPath(this.data, node.data, position)) {
+        throw new Error(`move: target path '${position}' is the source or one of its descendants`);
+      }
+    }
     if (!this.options.dryRun) {
       if (this.options.strictPathsWarn && !hasPath(this.data, position)) {
         this.stats.warnings.push(`${kind}: target path '${position}' did not exist; created implicitly`);
       }
       const element = isCopy ? cloneJson(node.data) : node.data;
-      if (!isCopy) {
-        assertCanInsertIntoTargetPath(this.data, position, mode, key);
-      }
       const plannedTarget = resolveTargetWithPathCreation(this.data, position);
-      if (!isCopy) removeFromOriginal(node);
+      if (!isCopy && !removeFromOriginal(node)) throw new Error('move: source changed before it could be removed');
       // Reuse the pre-resolved target for both move and copy: insertIntoTargetPath
       // inserts INTO the target (never replaces it), so plannedTarget stays valid.
       // Previously copy re-resolved from root per call — a redundant O(depth) traversal.
@@ -474,7 +507,15 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
         }
         case 'insert': {
           const { data, position, key } = a as InsertAction;
-          if (!this.options.dryRun) insertRelative(node, data, position, key, this.options, this.stats);
+          const insertable = canInsertRelative(node, data, position, key, this.options);
+          if (!insertable) {
+            if (this.options.warnOnOverwrite !== false) {
+              const target = typeof key === 'string' || typeof key === 'number' ? ` '${key}'` : '';
+              this.stats.warnings.push(`insert: target${target} is not writable; operation skipped`);
+            }
+            break;
+          }
+          if (!this.options.dryRun && !insertRelative(node, data, position, key, this.options, this.stats)) break;
           this.stats.inserted++;
           if (this.options.trackOperations !== false) this.stats.operations.push(`insert ${position} ${typeof key === 'number' ? `index=${key}` : (key ?? '')}`);
           break;
@@ -490,6 +531,14 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
 
   private applyInsertTo(action: InsertToAction): void {
     const { position, data, mode, key } = action;
+    const validatedTarget = assertCanInsertIntoTargetPath(this.data, position, mode, key);
+    if (!canInsertIntoResolvedTarget(validatedTarget, data, mode, key, this.options)) {
+      if (this.options.warnOnOverwrite !== false) {
+        const target = typeof key === 'string' || typeof key === 'number' ? `${position}.${key}` : position;
+        this.stats.warnings.push(`insert_to: target '${target}' write skipped by overwrite policy`);
+      }
+      return;
+    }
     if (this.options.strictPathsWarn && !hasPath(this.data, position)) {
       this.stats.warnings.push(`insert_to: target path '${position}' did not exist; created implicitly`);
     }
@@ -506,12 +555,25 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
     matches: SearchResultNode[]
   ): void {
     const { targetKey, targetOperator, targetValue, mode, key } = action;
-    const targetsAll = selectTargets(this.data, this.options, targetKey, targetOperator, targetValue);
+    const targetsAll = selectTargets(
+      this.data,
+      this.options,
+      targetKey,
+      targetOperator,
+      targetValue,
+      (mode ?? 'inside') !== 'inside',
+    );
     const targets = fan.allTargets ? targetsAll : (targetsAll.length ? [targetsAll[0]] : []);
-    let applied = this.options.dryRun ? matches.length * targets.length : 0;
-    if (!this.options.dryRun) {
-      applied = fanoutMatchesToTargets(fan.kind, matches, targets, mode, key, this.options, this.stats);
-    }
+    const applied = fanoutMatchesToTargets(
+      fan.kind,
+      matches,
+      targets,
+      mode,
+      key,
+      this.options,
+      this.stats,
+      !!this.options.dryRun,
+    );
     if (fan.kind === 'move') this.stats.moved += applied;
     else this.stats.copied += applied;
     if (this.options.trackOperations !== false) this.stats.operations.push(
@@ -523,11 +585,16 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
 
   private applyMoveMatchesOverwrite(action: MoveMatchesOverwriteAction, matches: SearchResultNode[]): void {
     const { targetKey, targetOperator, targetValue, overwriteKey } = action;
-    const targets = selectTargets(this.data, this.options, targetKey, targetOperator, targetValue);
-    const objectTargets = targets.filter((target) => isObject(target.data));
+    const targets = selectTargets(this.data, this.options, targetKey, targetOperator, targetValue, false);
+    const objectTargets = targets.filter((target) => isRecordObject(target.data));
     const ordered = orderMatchesForMove(matches);
     for (const src of ordered) {
+      if (!canRemoveFromOriginal(src)) {
+        this.stats.warnings.push('move_matches_overwrite: source is not attached to a removable parent; source left in place');
+        continue;
+      }
       const writableTargets = objectTargets.filter((target) => {
+        if (wouldCreateMoveCycle(src.data, target, 'inside')) return false;
         const targetData = target.data as Record<string, unknown>;
         const exists = overwriteKey in targetData;
         const effect = getAssignmentEffect(
@@ -546,12 +613,13 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
         continue;
       }
       if (!this.options.dryRun) {
-        removeFromOriginal(src);
-        for (const t of writableTargets) {
+        if (!removeFromOriginal(src)) throw new Error('move_matches_overwrite: source changed before it could be removed');
+        for (let i = 0; i < writableTargets.length; i++) {
+          const t = writableTargets[i];
           assignWithPolicy(
             t.data as Record<string, unknown>,
             overwriteKey,
-            src.data,
+            i === 0 ? src.data : cloneJson(src.data),
             this.options,
             this.stats,
             (conflictKey) => new Error(`copy/move overwrite prevented for key '${conflictKey}'`)
@@ -580,4 +648,4 @@ export class JsonPipeline<TData extends JsonLike = JsonLike> implements Pipeline
   }
 }
 
-export default JsonPipeline;
+export default JsnqPipeline;

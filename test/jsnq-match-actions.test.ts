@@ -1,12 +1,12 @@
 /**
- * jsondb-match-actions.test.ts
+ * jsnq-match-actions.test.ts
  *
- * Focused unit tests for the two standalone jsondb core seams introduced by the
+ * Focused unit tests for the two standalone jsnq core seams introduced by the
  * dedup refactor: core/match.ts (criteria compile/match + strict operator policy)
  * and core/actions.ts (prepared value actions shared by pipeline & fast path).
  * These run without the pipeline, proving each part is independently testable.
  *
- * Run: bun test/jsondb-match-actions.test.ts
+ * Run: bun test/jsnq-match-actions.test.ts
  */
 
 import {

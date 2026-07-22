@@ -7,9 +7,9 @@ import {
 } from '../synced/core/data-engine';
 
 /**
- * Thin host facade over the jsondb data-engine path parser. jsondb is the SSOT
+ * Thin host facade over the jsnq data-engine path parser. jsnq is the SSOT
  * for path-expression parsing and its bounded plan cache, so parsing behaves
- * identically here and in every other host project embedding jsondb.
+ * identically here and in every other host project embedding jsnq.
  */
 export class PathUtils {
   static splitPathExpression(path: string): readonly string[] {
