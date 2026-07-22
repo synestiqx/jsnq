@@ -1,0 +1,1 @@
+{"version":3,"file":"path-safety.d.ts","sourceRoot":"","sources":["../../src/utils/path-safety.ts"],"names":[],"mappings":"AAAA,eAAO,MAAM,uBAAuB,aAAqD,CAAC;AAE1F,wBAAgB,sBAAsB,CAAC,OAAO,EAAE,MAAM,GAAG,MAAM,GAAG,SAAS,GAAG,IAAI,GAAG,OAAO,CAE3F;AAED,wBAAgB,uBAAuB,CAAC,QAAQ,EAAE,SAAS,OAAO,EAAE,GAAG,OAAO,CAE7E"}

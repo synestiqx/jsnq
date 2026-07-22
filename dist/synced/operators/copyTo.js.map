@@ -1,0 +1,1 @@
+{"version":3,"file":"copyTo.js","sourceRoot":"","sources":["../../../src/synced/operators/copyTo.ts"],"names":[],"mappings":"AACA,OAAO,EAAkB,gBAAgB,EAAE,MAAM,UAAU,CAAC;AAG5D,MAAM,IAAI,GAAG,gBAAgB,CAAC,MAAM,CAAC,CAAC;AAOtC,SAAS,MAAM,CAAyB,QAAgB,EAAE,aAA6C,QAAQ,EAAE,GAAqB;IACpI,OAAO,IAAI,CAAC,QAAQ,EAAE,UAAU,EAAE,GAAG,CAAC,CAAC;AACzC,CAAC;AAED,eAAe,MAAM,CAAC"}
