@@ -1,13 +1,13 @@
 {
   "name": "@adsq/jsnq",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Framework-agnostic JSON pipeline engine: where/update/move/copy/insert/delete over nested JSON trees, with copy-on-write fast paths. Zero runtime dependencies.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/synestiqx/jsnq.git"
+    "url": "git+https://github.com/adsqx/jsnq.git"
   },
-  "homepage": "https://github.com/synestiqx/jsnq#readme",
-  "bugs": "https://github.com/synestiqx/jsnq/issues",
+  "homepage": "https://github.com/adsqx/jsnq#readme",
+  "bugs": "https://github.com/adsqx/jsnq/issues",
   "type": "module",
   "main": "./dist/synced/index.js",
   "types": "./dist/synced/index.d.ts",
