@@ -1,26 +1,31 @@
-# @synestiqx/jsnq
+# jsnq
 
 Framework-independent JSON query and mutation engine used by SolidStore and Angular SignalStore. It supports flat arrays and deeply nested trees, copy-on-write host mutations, typed paths, structural moves/copies, and focused operator imports. It has no runtime dependencies.
 
-## Install From GitHub
+## Install
+
+```sh
+npm install jsnq
+# or
+bun add jsnq
+```
+
+Installing straight from Git also works, because the repository commits its build output:
 
 ```sh
 bun add github:synestiqx/jsnq
-# or
-npm install github:synestiqx/jsnq
 ```
 
-The repository commits tree-shakeable ESM, CommonJS fallback output, and declarations, so
-Git installation does not depend on a lifecycle build. Modern bundlers select `import`,
-Node `require()` selects the isolated CommonJS build, and both share one TypeScript source.
-It can also be linked locally with `file:../jsnq`.
+The package ships tree-shakeable ESM, a CommonJS fallback, and declarations. Modern
+bundlers select `import`, Node `require()` selects the isolated CommonJS build, and both
+share one TypeScript source.
 
 ## Query And Mutate
 
 ```ts
-import JsnqPipeline from '@synestiqx/jsnq/core/pipeline';
-import where from '@synestiqx/jsnq/operators/where';
-import update from '@synestiqx/jsnq/operators/update';
+import JsnqPipeline from 'jsnq/core/pipeline';
+import where from 'jsnq/operators/where';
+import update from 'jsnq/operators/update';
 
 const users = [
   { id: 1, profile: { name: 'Ann' }, active: true },
@@ -49,9 +54,9 @@ const nextUsers = mutation.data;
 Structural operators are independent modules:
 
 ```ts
-import moveTo from '@synestiqx/jsnq/operators/moveTo';
-import copyToAll from '@synestiqx/jsnq/operators/copyToAll';
-import insertTo from '@synestiqx/jsnq/operators/insertTo';
+import moveTo from 'jsnq/operators/moveTo';
+import copyToAll from 'jsnq/operators/copyToAll';
+import insertTo from 'jsnq/operators/insertTo';
 ```
 
 ## Operator Reference
@@ -103,7 +108,7 @@ import {
   writeJsonPath,
   deleteJsonPath,
   createJsonPathPlan,
-} from '@synestiqx/jsnq/data-engine';
+} from 'jsnq/data-engine';
 
 const state: Record<string, unknown> = {};
 writeJsonPath(state, 'workspace.pages.0.title', 'Home');
@@ -139,10 +144,10 @@ records is one batch, not one primitive operation.
 
 ## Package Boundaries
 
-- `@synestiqx/jsnq`: complete public API.
-- `@synestiqx/jsnq/operators/<name>`: one operator.
-- `@synestiqx/jsnq/core/<module>`: host and advanced integration.
-- `@synestiqx/jsnq/data-engine`: path read/write/delete and mutation metadata.
+- `jsnq`: complete public API.
+- `jsnq/operators/<name>`: one operator.
+- `jsnq/core/<module>`: host and advanced integration.
+- `jsnq/data-engine`: path read/write/delete and mutation metadata.
 
 ## Verify
 
