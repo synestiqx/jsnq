@@ -409,7 +409,16 @@ export function getJsonBySegments<T = unknown>(obj: unknown, segments: readonly 
   const len = segments.length;
   for (let i = 0; i < len; i++) {
     if (current == null) return undefined;
-    current = (current as Record<string, unknown>)[segments[i]];
+    const segment = segments[i] as string;
+    // Prototype guard. Path-based entry points reject these while compiling the plan, but
+    // this one takes raw segments, so without the check `['__proto__']` handed back
+    // Object.prototype to the caller. The length test is a cheap pre-filter: the three
+    // forbidden names are 9 or 11 characters, so ordinary keys never reach the Set lookup.
+    const segmentLength = segment.length;
+    if ((segmentLength === 9 || segmentLength === 11) && FORBIDDEN_SEGMENTS.has(segment)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[segment];
   }
   return current as T | undefined;
 }
