@@ -10,12 +10,6 @@ npm install @adsq/jsnq
 bun add @adsq/jsnq
 ```
 
-Installing straight from Git also works, because the repository commits its build output:
-
-```sh
-bun add github:synestiqx/jsnq
-```
-
 The package ships tree-shakeable ESM, a CommonJS fallback, and declarations. Modern
 bundlers select `import`, Node `require()` selects the isolated CommonJS build, and both
 share one TypeScript source.
