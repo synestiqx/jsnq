@@ -1,5 +1,5 @@
 {
-  "name": "jsnq",
+  "name": "@adsq/jsnq",
   "version": "0.1.0",
   "description": "Framework-agnostic JSON pipeline engine: where/update/move/copy/insert/delete over nested JSON trees, with copy-on-write fast paths. Zero runtime dependencies.",
   "repository": {
@@ -75,7 +75,7 @@
   },
   "keywords": [
     "json",
-    "jsnq",
+    "@adsq/jsnq",
     "pipeline",
     "query",
     "immutable",

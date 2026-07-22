@@ -5,9 +5,9 @@ Framework-independent JSON query and mutation engine used by SolidStore and Angu
 ## Install
 
 ```sh
-npm install jsnq
+npm install @adsq/jsnq
 # or
-bun add jsnq
+bun add @adsq/jsnq
 ```
 
 Installing straight from Git also works, because the repository commits its build output:
@@ -23,9 +23,9 @@ share one TypeScript source.
 ## Query And Mutate
 
 ```ts
-import JsnqPipeline from 'jsnq/core/pipeline';
-import where from 'jsnq/operators/where';
-import update from 'jsnq/operators/update';
+import JsnqPipeline from '@adsq/jsnq/core/pipeline';
+import where from '@adsq/jsnq/operators/where';
+import update from '@adsq/jsnq/operators/update';
 
 const users = [
   { id: 1, profile: { name: 'Ann' }, active: true },
@@ -54,9 +54,9 @@ const nextUsers = mutation.data;
 Structural operators are independent modules:
 
 ```ts
-import moveTo from 'jsnq/operators/moveTo';
-import copyToAll from 'jsnq/operators/copyToAll';
-import insertTo from 'jsnq/operators/insertTo';
+import moveTo from '@adsq/jsnq/operators/moveTo';
+import copyToAll from '@adsq/jsnq/operators/copyToAll';
+import insertTo from '@adsq/jsnq/operators/insertTo';
 ```
 
 ## Operator Reference
@@ -108,7 +108,7 @@ import {
   writeJsonPath,
   deleteJsonPath,
   createJsonPathPlan,
-} from 'jsnq/data-engine';
+} from '@adsq/jsnq/data-engine';
 
 const state: Record<string, unknown> = {};
 writeJsonPath(state, 'workspace.pages.0.title', 'Home');
@@ -144,10 +144,10 @@ records is one batch, not one primitive operation.
 
 ## Package Boundaries
 
-- `jsnq`: complete public API.
-- `jsnq/operators/<name>`: one operator.
-- `jsnq/core/<module>`: host and advanced integration.
-- `jsnq/data-engine`: path read/write/delete and mutation metadata.
+- `@adsq/jsnq`: complete public API.
+- `@adsq/jsnq/operators/<name>`: one operator.
+- `@adsq/jsnq/core/<module>`: host and advanced integration.
+- `@adsq/jsnq/data-engine`: path read/write/delete and mutation metadata.
 
 ## Verify
 
